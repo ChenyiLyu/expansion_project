@@ -1,0 +1,249 @@
+---
+title: "gene expression change in different cell type associate with expansion"
+output:
+  html_document:
+    df_print: paged
+---
+### Load library
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+# Load libraries
+suppressPackageStartupMessages({
+  library(slingshot); library(SingleCellExperiment); library(tradeSeq);
+  library(Seurat); library(tidyverse);
+  library(RCurl); library(cowplot);
+  library(openxlsx); library(ggplot2);library(qusage);
+  library(dplyr); library(patchwork); library(ggpubr);
+  library(RColorBrewer); source('./helper.R'); 
+})
+
+# Load data
+seurat_integrated <- readRDS('./results/seurat_annotated_remove_mito.rds')
+
+```
+
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+Idents(object = seurat_integrated) <- "reGroup"
+
+seurat_hf <- subset(seurat_integrated,idents = c('Infundibulum','HF III','HF IV','HF V','HFSC'))
+
+DefaultAssay(seurat_hf) <- 'RNA'
+seurat_hf <- NormalizeData(seurat_hf)
+seurat_hf <- ScaleData(seurat_hf)
+Idents(object = seurat_hf) <- "sample"
+levels(seurat_hf) <- c('nonexpanded','expanded')
+```
+```{r}
+# Selected genes
+DefaultAssay(seurat_hf) <- 'RNA'
+
+hippo <- c('Yap1', 'Wwtr1', 'Lats1','Sav1','Mob1a','Mob1b')
+yap_dn <- c('Amotl1', 'Amotl2', 'Myc','Tgfb1', 'Nfkb1')
+pi3k_akt <- c('Akt1','Akt2','Itgb1','Hif1a')
+hh <- c('Ptk2','Banf1','Vcl')
+ptwy <- list(pi3k_akt)
+
+Idents(seurat_hf) <- 'mainGroup'
+seurat_hf$sample <- factor(seurat_hf$sample, levels = c('nonexpanded','expanded'))
+
+for (i in ptwy) {
+  goi <- i
+  print(VlnPlot(seurat_hf,features=c('Yap1'),group.by = 'sample',split.by = 'sample',pt.size = 0, flip = TRUE,stack = TRUE)+
+  stat_compare_means(method = 'wilcox.test',vjust=2,label = "p.signif")+
+  scale_fill_manual(values = c('#DDAA33','#33BBEE')))+
+  ggsave('./hf_hippo.pdf',height = 5,width=5)
+}
+print('x')
+```
+
+```{r}
+DefaultAssay(seurat_hf) <- 'RNA'
+
+VlnPlot(seurat_hf,features=c('Amotl1'),group.by = 'sample',split.by = 'sample',pt.size = 0, flip = TRUE)+
+  stat_compare_means(method = 'wilcox.test',vjust=3,hjust = -5,label = "p.signif")+
+  scale_fill_manual(values = c('#DDAA33','#33BBEE'))+theme_bw(base_line_size = 0)+
+  ggsave('./hf_x.pdf',height = 5,width=5)
+```
+
+```{r}
+DefaultAssay(seurat_hf) <- 'RNA'
+Idents(seurat_hf) <- 'sample'
+DotPlot(seurat_hf,features=c('Fst','Sostdc1',
+                             'Fos', 'Atf3',
+                             'Col17a1', 'Krt5',
+                             'Krt79','Defb6',
+                             'Wfdc3','Cxcl14'),group.by = 'reGroup', idents = 'nonexpanded',cols = c("lightgrey",'#DDAA33'))+
+  theme_bw(base_line_size = 0)+scale_y_discrete(limits=rev)+NoLegend()+
+  ggsave('./hf_ne_nolegend.pdf',height = 2.5,width=5)
+
+
+DotPlot(seurat_hf,features=c('Fst','Sostdc1',
+                             'Fos', 'Atf3',
+                             'Col17a1', 'Krt5',
+                             'Krt79','Defb6',
+                             'Wfdc3','Cxcl14'),group.by = 'reGroup', idents = 'expanded',cols = c("lightgrey",'#33BBEE'))+
+  theme_bw(base_line_size = 0)+scale_y_discrete(limits=rev)+NoLegend()+
+  ggsave('./hf_e_nolengend.pdf',height = 2.5,width=5)
+
+
+Idents(seurat_hf) <- 'sample'
+DotPlot(seurat_hf,idents = 'nonexpanded',features=c('Lgr5', 'Lgr6', 'Yap1','Wwtr1','Myc','Amotl1'),group.by = 'reGroup',cols = c("lightgrey",'#DDAA33'))+scale_y_discrete(limits=rev)+
+theme_bw(base_line_size = 0) + ggsave('./hf_e_specific.pdf',height = 2.5,width=5)
+
+DotPlot(seurat_hf,idents = 'expanded',features=c('Lgr5', 'Lgr6', 'Yap1','Wwtr1','Myc','Amotl1'),group.by = 'reGroup',cols = c("lightgrey",'#33BBEE'))+
+theme_bw(base_line_size = 0) +scale_y_discrete(limits=rev)+ ggsave('./hf_ne_specific.pdf',height = 2.5,width=5)
+
+Idents(seurat_hf) <- 'reGroup'
+seurat_hf$dot<-Idents(RenameIdents(seurat_hf,
+                                   "Infundibulum" ='Infundibulum',
+                                                  "HF III" ='HFIII',
+                                                  "HF IV" ='HFIV',
+                                                  "HF V" ='HFV',
+                                                  "HFSC" ='HFSC'))
+Idents(seurat_hf) <- 'dot'
+DotPlot(seurat_hf,features=c( 'Yap1','Wwtr1','Myc','Amotl1'),split.by = 'sample',group.by = 'dot',cols = c('#33BBEE','#DDAA33'))+
+theme_bw(base_line_size = 0) +scale_y_discrete(limits=rev)+ ggsave('./hf_hippo.pdf',height = 2.5,width=5)
+
+Idents(seurat_hf) <- 'reGroup'
+seurat_hf$dot<-Idents(RenameIdents(seurat_hf,
+                                   "Infundibulum" ='Infundibulum',
+                                                  "HF III" ='HFIII',
+                                                  "HF IV" ='HFIV',
+                                                  "HF V" ='HFV',
+                                                  "HFSC" ='HFSC'))
+Idents(seurat_hf) <- 'dot'
+DotPlot(seurat_hf,features=c( 'Lgr5', 'Lgr6','tdTomato'),split.by = 'sample',group.by = 'dot',cols = c('#33BBEE','#DDAA33'))+
+theme_bw(base_line_size = 0) +scale_y_discrete(limits=rev)+ ggsave('./hf_identity.pdf',height = 2.5,width=5)
+  
+```
+
+```{r}
+Idents(seurat_hf) <- "reGroup"
+DefaultAssay(seurat_hf) <- 'RNA'
+
+seurat_objs <- SplitObject(seurat_hf,split.by = 'sample')
+E_seurat <- seurat_objs[["expanded"]]
+E_seurat <- NormalizeData(E_seurat, verbose = FALSE)
+E_seurat <- ScaleData(E_seurat, verbose = FALSE)
+
+NE_seurat <- seurat_objs[["nonexpanded"]]
+NE_seurat <- NormalizeData(NE_seurat, verbose = FALSE)
+NE_seurat <- ScaleData(NE_seurat, verbose = FALSE)
+
+stim.markers <- FindAllMarkers(E_seurat,only.pos = TRUE, min.pct = 0.25,logfc.threshold = 0.25,return.thresh = 0.01)
+top10_stim <- stim.markers %>% group_by(cluster) %>%  top_n(n = 10, wt = avg_log2FC)
+hm_e <- DoHeatmap(E_seurat, features = top10_stim$gene, size = 4, angle = 45, label = FALSE, group.colors = theme_umap_col, draw.lines = FALSE) +
+  theme(text = element_text(size = 14), 
+        axis.text.y = element_text(size = 5),
+        plot.title = element_text(color="black", size=14, face="bold"))+
+  scale_fill_gradientn(guide = 'colourbar', 
+                       colours = rev(brewer.pal(n=11,name = "RdBu")))
+hm_e
+top10_stim
+ggsave(hm_e, file='./filtered_sum/de_spatial/hm_E_clusterMKs.pdf',width = 5,height = 7,dpi=500)
+write.xlsx(stim.markers,file='./filtered_sum/de_spatial/E_clusterMKs.xlsx')
+
+stim.markers <- FindAllMarkers(NE_seurat,only.pos = TRUE, min.pct = 0.25,logfc.threshold = 0.25,return.thresh = 0.01)
+top10_stim <- stim.markers %>% group_by(cluster) %>%  top_n(n = 10, wt = avg_log2FC)
+hm_ne <- DoHeatmap(NE_seurat, features = top10_stim$gene, size = 4, angle = 45, label = FALSE,group.colors = theme_umap_col,draw.lines = FALSE) +
+  theme(text = element_text(size = 14), 
+        axis.text.y = element_text(size = 5),
+        plot.title = element_text(color="black", size=14, face="bold"))+
+  scale_fill_gradientn(guide = 'colourbar', 
+                       colours = rev(brewer.pal(n=11,name = "RdBu")))
+hm_ne
+top10_stim
+ggsave(hm_ne, file='./filtered_sum/de_spatial/hm_NE_clusterMKs.png',width = 5,height = 7,dpi=500)
+write.xlsx(stim.markers,file='./filtered_sum/de_spatial/NE_clusterMKs.xlsx')
+
+```
+
+# GO scoring
+###
+```{r}
+DefaultAssay(seurat_hf) <- 'RNA'
+seurat_hf <- NormalizeData(seurat_hf)
+seurat_hf <- ScaleData(seurat_hf)
+seurat_hf$sample <- factor(seurat_hf$sample, levels = c('nonexpanded','expanded'))
+Idents(object = seurat_hf) <- "reGroup"
+
+levels(Idents(seurat_hf)) <- c('Infundibulum','HF III','HF IV','HF V','HFSC')
+```
+
+
+
+```{r message=FALSE, warning=FALSE, results='hide'}
+start_time <- Sys.time()
+folder <- list.files('./gene_sets/')
+fn <- 'selected_sp'
+genesets <- list.files(paste0('./gene_sets/', fn))
+genesets
+geneset <- genesets[1]
+for (geneset in genesets) {
+  genes <- qusage::read.gmt((paste0('./gene_sets/', fn, '/',  geneset)))
+  genes[[1]] <- genes[[1]] %>% tolower() %>% capFirst()
+  genes
+  geneset <- gsub('.gmt','',geneset)
+  geneset
+  seurat_hf <- AddModuleScore(
+    object = seurat_hf,
+    features = genes,
+    name = geneset, search =TRUE)
+} 
+setname <- c()
+for (geneset in genesets) {
+  geneset <- gsub('.gmt','',geneset)
+  setname <- c(setname,paste0(geneset,'1'))
+}
+setname <- unlist(setname)
+print(VlnPlot(seurat_hf,features = setname,group.by = 'reGroup',split.by = 'sample',flip=TRUE,stack =TRUE,pt.size = 0,combine = TRUE)+
+  scale_fill_manual(values = c('#DDAA33','#33BBEE'))+
+  geom_boxplot(width=0.1, color="black", outlier.shape = NA,alpha=0.2, position=position_dodge(width = 0.9))+
+  stat_compare_means(method = 'wilcox.test',label = "p.signif",vjust=2))+
+  ggsave('./filtered_sum/de_spatial/spatial_score_sp.pdf',height = 10,width=10)
+end_time <- Sys.time()
+end_time-start_time
+saveRDS(seurat_hf,'./filtered_sum/de_spatial/seurat_hf_score.rds')
+ref <- read.xlsx('./gene_sets/wound_paper.xlsx')
+quiesence <- ref$X7[2:34]
+
+qlist['quiesence'] <- list(quiesence)
+qlist
+seurat_hf <- AddModuleScore(
+  object = seurat_hf,
+  features = qlist,
+  name = 'quiesence', search =TRUE)
+
+print(VlnPlot(seurat_hf,features = 'quiesence1',group.by = 'reGroup',split.by = 'sample',flip=TRUE,pt.size = 0,combine = TRUE)+
+  scale_fill_manual(values = c('#DDAA33','#33BBEE'))+
+  geom_boxplot(width=0.1, color="black", outlier.shape = NA,alpha=0.2, position=position_dodge(width = 0.9))+
+  stat_compare_means(method = 'wilcox.test',label = "p.signif",vjust=2))+
+  ggsave('./filtered_sum/de_spatial/spatial_score_sp.pdf',height = 10,width=10)
+
+print(VlnPlot(seurat_hf,features = 'GO_HIPPO_SIGNALING1',group.by = 'reGroup',split.by = 'sample',flip=TRUE,pt.size = 0)+
+  scale_fill_manual(values = c('#DDAA33','#33BBEE'))+
+  geom_boxplot(width=0.2, color="black", outlier.shape = NA,alpha=0.2, position=position_dodge(width = 0.9))+
+  stat_compare_means(method = 'wilcox.test',label = "p.signif",vjust=2))+
+  theme_bw(base_line_size = 0)+
+    ggsave('./filtered_sum/de_spatial/spatial_score_hippo.pdf',height = 5,width=10)
+
+```
+### Visualize TOP features
+```{r}
+Idents(seurat_integrated) <- 'mainGroup'
+up_reg_top10 <- rev(up_genes[1:10])
+down_reg_top10 <- rev(down_genes[1:10])
+DefaultAssay(seurat_hf_score) <- 'RNA'
+seurat_hf_score <- NormalizeData(seurat_hf_score)
+
+# rename cluster idents
+seurat_hf_score$cluster_sample <- ''
+seurat_hf_score$cluster_sample[which(seurat_hf_score$sample == 'expanded' & seurat_hf_score$mainGroup == 'Basal' )] <- 'basal_e'
+seurat_hf_score$cluster_sample[which(seurat_hf_score$sample == 'expanded' & seurat_hf_score$mainGroup == 'Spinous' )] <- 'spinous_e'
+seurat_hf_score$cluster_sample[which(seurat_hf_score$sample == 'expanded' & seurat_hf_score$mainGroup == 'HF' )] <- 'HF_e'
+seurat_hf_score$cluster_sample[which(seurat_hf_score$sample == 'nonexpanded' & seurat_hf_score$mainGroup == 'Basal' )] <- 'basal_ne'
+seurat_hf_score$cluster_sample[which(seurat_hf_score$sample == 'nonexpanded' & seurat_hf_score$mainGroup == 'Spinous' )] <- 'spinous_ne'
+seurat_hf_score$cluster_sample[which(seurat_hf_score$sample == 'nonexpanded' & seurat_hf_score$mainGroup == 'HF' )] <- 'HF_ne'
+
+DotPlot(seurat_hf_score, features = c(down_reg_top10, up_reg_top10), assay = "RNA",group.by = 'cluster_sample') + theme_linedraw()+RotatedAxis() + coord_flip()+scale_y_discrete(limits=c('basal_ne','spinous_ne','HF_ne','basal_e','spinous_e','HF_e')) +ggsave('./filtered_sum/de_groups/top_deg_exprs.pdf',height = 5,width=6)
+
+```

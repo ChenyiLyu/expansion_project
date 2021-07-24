@@ -1,0 +1,275 @@
+---
+title: "1. quality control"
+output:
+  html_document:
+    df_print: paged
+---
+
+QC
+10x Genomics Chromium Platform
+sequenced on the Illumina HighSeq 4000
+
+## Load libraries
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+library(SingleCellExperiment)
+library(Seurat)
+library(tidyverse)
+library(Matrix)
+library(scales)
+library(cowplot)
+library(RCurl)
+```
+
+## Load data
+```{r include=TRUE, message=FALSE, warning=FALSE}
+files <- list.files(path = "./raw_data")
+for (file in files){
+  seurat_data <- Read10X(data.dir = paste0("raw_data/", file))
+  seurat_obj <- CreateSeuratObject(counts = seurat_data,
+                                   min.features = 100,
+                                   project = file)
+  assign(file, seurat_obj)
+}
+merged_seurat <- merge(x=e1,y=c(e2, ne1, ne2),add.cell.id=c('e1', 'e2', 'ne1', 'ne2'))
+merged_seurat
+```
+
+## calculate mito ratio
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+merged_seurat$log10GenesPerUMI <- log10(merged_seurat$nFeature_RNA) / log10(merged_seurat$nCount_RNA)
+
+# Compute percent mito ratio 
+library(AnnotationHub)
+ah <- AnnotationHub()
+
+ahDb <- query(ah, 
+              pattern = c("Mus musculus", "EnsDb"), 
+              ignore.case = TRUE)
+
+ahDb %>% 
+  mcols()
+
+# Acquire the latest annotation files
+id <- ahDb %>%
+  mcols() %>%
+  rownames() %>%
+  tail(n = 1)
+
+# Download the appropriate Ensembldb database
+edb <- ah[[id]]
+
+# Extract gene-level information from database
+annotations <- genes(edb, 
+                     return.type = "data.frame")  
+
+# Select annotations of interest
+annotations <- annotations %>%
+  dplyr::select(gene_id, gene_name, gene_biotype, seq_name, description, entrezid)
+
+# Extract IDs for mitochondrial genes
+mt <- annotations %>%
+  dplyr::filter(seq_name == "MT") %>%
+  dplyr::pull(gene_name)
+
+# Number of UMIs assigned to mitochondrial genes
+merged_seurat@meta.data$mtUMI <- Matrix::colSums(merged_seurat[["RNA"]]@counts[which(rownames(merged_seurat[["RNA"]]@counts) %in% mt),], na.rm = T)
+
+# Calculate of mitoRatio per cell
+merged_seurat@meta.data$mitoRatio <- merged_seurat@meta.data$mtUMI/merged_seurat@meta.data$nCount_RNA
+
+head(merged_seurat@meta.data)
+```
+
+## Examine raw data
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+metadata <- merged_seurat@meta.data
+metadata$cells <- rownames(metadata)
+metadata <- metadata %>%
+  dplyr::rename(seq_folder = orig.ident,
+                nUMI = nCount_RNA,
+                nGene = nFeature_RNA)
+
+metadata$sample <- NA
+metadata$sample[which(str_detect(metadata$cells, "^e1"))] <- "expanded"
+metadata$sample[which(str_detect(metadata$cells, "^e2"))] <- "expanded"
+metadata$sample[which(str_detect(metadata$cells, "^ne1"))] <- "nonexpanded"
+metadata$sample[which(str_detect(metadata$cells, "^ne2"))] <- "nonexpanded"
+metadata$batch <- NA
+metadata$batch[which(str_detect(metadata$cells, "^e1"))] <- "batch1"
+metadata$batch[which(str_detect(metadata$cells, "^e2"))] <- "batch2"
+metadata$batch[which(str_detect(metadata$cells, "^ne1"))] <- "batch1"
+metadata$batch[which(str_detect(metadata$cells, "^ne2"))] <- "batch2"
+merged_seurat@meta.data <- metadata
+head(merged_seurat@meta.data)
+save(merged_seurat, file="data/merged_filtered_seurat.RData")
+head(metadata)
+```
+
+## Visulization raw data
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+# Visualize the number of cell counts per sample
+metadata %>% 
+  ggplot(aes(x=seq_folder, fill=seq_folder)) + 
+  geom_bar() +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+  theme(plot.title = element_text(hjust=0.5, face="bold")) +
+  ggtitle("NCells")
+
+# Visualize the number UMIs/transcripts per cell
+metadata %>% 
+  ggplot(aes(color=seq_folder, x=nUMI, fill= seq_folder)) + 
+  geom_density(alpha = 0.2) + 
+  scale_x_log10(limits = c(100,110000), breaks =c(500,1000,5000,10000,20000,40000,80000)) + 
+  theme_classic() +
+  ylab("Cell density") +
+  geom_vline(xintercept = 500)
+
+# Visualize the distribution of genes detected per cell via histogram
+metadata %>% 
+  ggplot(aes(color=seq_folder, x=nGene, fill= seq_folder)) + 
+  geom_density(alpha = 0.2) + 
+  theme_classic() +
+  scale_x_log10(limits = c(50,15000),breaks = c(200,500,1000,3000,5000,10000)) +
+  geom_vline(xintercept = 200)
+
+# Visualize the distribution of genes detected per cell via boxplot
+metadata %>% 
+  ggplot(aes(x=seq_folder, y=log10(nGene), fill=seq_folder)) + 
+  geom_boxplot() + 
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+  theme(plot.title = element_text(hjust=0.5, face="bold")) +
+  ggtitle("NCells vs NGenes")
+
+# Visualize the correlation between genes detected and number of UMIs and determine whether strong presence of cells with low numbers of genes/UMIs
+metadata %>% 
+  ggplot(aes(x=nUMI, y=nGene, color=mitoRatio)) + 
+  geom_point() + 
+  scale_colour_gradient(low = "gray90", high = "black") +
+  stat_smooth(method=lm) +
+  scale_x_log10() + 
+  scale_y_log10() + 
+  theme_classic() +
+  geom_vline(xintercept = 500) +
+  geom_hline(yintercept = 250) +
+  facet_wrap(~seq_folder)
+
+# Visualize the distribution of mitochondrial gene expression detected per cell
+metadata %>% 
+  ggplot(aes(color=seq_folder, x=mitoRatio, fill=seq_folder)) + 
+  geom_density(alpha = 0.2) + 
+  scale_x_log10(breaks=c(0,0.05,0.1, 0.2,0.4, 1)) + 
+  theme_classic() +
+  geom_vline(xintercept = 0.1)+
+  ggtitle('distribution of mitochondrial gene expression detected per cell')
+
+# Visualize the overall complexity of the gene expression by visualizing the genes detected per UMI
+metadata %>%
+  ggplot(aes(x=log10GenesPerUMI, color = seq_folder, fill=seq_folder)) +
+  geom_density(alpha = 0.2) +
+  theme_classic() +
+  geom_vline(xintercept = 0.7)+
+  ggtitle('cell_complexity')
+```
+
+## Filter low quality genes and cells
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+# Filter out low quality reads using selected thresholds - these will change depend on experiments
+filtered_seurat <- subset(x = merged_seurat, 
+                          subset= (nUMI >= 500)  & 
+                            (nGene >= 200) & 
+                          (log10GenesPerUMI > 0.70) & 
+                            (mitoRatio < 0.1))
+
+# Output a logical vector for every gene on whether the more than zero counts per cell
+# Extract counts
+counts <- GetAssayData(object = filtered_seurat, slot = "counts")
+
+# Output a logical vector for every gene on whether the more than zero counts per cell
+nonzero <- counts > 0
+
+# Sums all TRUE values and returns TRUE if more than 10 TRUE values per gene
+keep_genes <- Matrix::rowSums(nonzero) >= 10
+
+# Only keeping those genes expressed in more than 10 cells
+filtered_counts <- counts[keep_genes, ]
+
+# Reassign to filtered Seurat object
+filtered_seurat <- CreateSeuratObject(filtered_counts, meta.data = filtered_seurat@meta.data)
+
+# Create .RData object to load at any time
+save(filtered_seurat, file="data/seurat_filtered.RData")
+```
+
+## Filtered Data
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+#--------Look back on filtered data (Reassess)------
+filteredMetadata <- filtered_seurat@meta.data
+# Visualize the number of cell counts per sample
+filteredMetadata %>% 
+  ggplot(aes(x=orig.ident, fill=orig.ident)) + 
+  geom_bar() +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+  theme(plot.title = element_text(hjust=0.5, face="bold")) +
+  ggtitle("NCells")
+
+# Visualize the number UMIs/transcripts per cell
+filteredMetadata %>% 
+  ggplot(aes(color=orig.ident, x=nUMI, fill= orig.ident)) + 
+  geom_density(alpha = 0.2) + 
+  scale_x_log10(limits = c(100,110000), breaks =c(200,500,1000,5000,10000,20000,40000,80000)) + 
+  theme_classic() +
+  ylab("Filtered Cell density") +
+  geom_vline(xintercept = 500)
+
+# Visualize the distribution of genes detected per cell via histogram
+filteredMetadata %>% 
+  ggplot(aes(color=orig.ident, x=nGene, fill= orig.ident)) + 
+  geom_density(alpha = 0.2) + 
+  theme_classic() +
+  scale_x_log10(limits = c(50,15000),breaks = c(200,500,1000,3000,5000,10000)) +
+  geom_vline(xintercept = 200)+
+  ggtitle('filtered_nGenes_per_cell_distr')
+
+# Visualize the distribution of genes detected per cell via boxplot
+filteredMetadata %>% 
+  ggplot(aes(x=orig.ident, y=log10(nGene), fill=orig.ident)) + 
+  geom_boxplot() + 
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+  theme(plot.title = element_text(hjust=0.5, face="bold")) +
+  ggtitle("NCells vs NGenes")
+# Visualize the correlation between genes detected and number of UMIs and determine whether strong presence of cells with low numbers of genes/UMIs
+filteredMetadata %>% 
+  ggplot(aes(x=nUMI, y=nGene, color=mitoRatio)) + 
+  geom_point() + 
+  scale_colour_gradient(low = "gray90", high = "black") +
+  stat_smooth(method=lm) +
+  scale_x_log10() + 
+  scale_y_log10() + 
+  theme_classic() +
+  geom_vline(xintercept = 500) +
+  geom_hline(yintercept = 250) +
+  facet_wrap(~orig.ident) +
+  ggtitle('filtered_mito_ratio')
+
+# Visualize the distribution of mitochondrial gene expression detected per cell
+filteredMetadata %>% 
+  ggplot(aes(color=orig.ident, x=mitoRatio, fill=orig.ident)) + 
+  geom_density(alpha = 0.2) + 
+  scale_x_log10(breaks=c(0,0.05,0.1, 0.2,1)) + 
+  theme_classic() +
+  geom_vline(xintercept = 0.1)+
+  ggtitle('filtered_mito_ratio_cell_distr')
+
+# Visualize the overall complexity of the gene expression by visualizing the genes detected per UMI
+filteredMetadata %>%
+  ggplot(aes(x=log10GenesPerUMI, color = orig.ident, fill=orig.ident)) +
+  geom_density(alpha = 0.2) +
+  theme_classic() +
+  geom_vline(xintercept = 0.7)+
+  ggtitle('filtered_cell_complexity')
+
+```

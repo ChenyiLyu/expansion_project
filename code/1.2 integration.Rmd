@@ -1,0 +1,87 @@
+---
+title: "2. SCR_Integration_analysis"
+output:
+  html_document:
+    df_print: paged
+---
+@source https://github.com/hbctraining/scRNA-seq_online/blob/master/lessons/06_SC_SCT_normalization.md
+# Overview
+* Check the impact of cell cycle on data.
+* Evaluate effects of batch effect.
+* Regress out sources of unwnated variation (nUMI, cc, mitoGenes) using Seurat SCTransform.
+* Identify feature genes to integrate datasets to minimize batch effects.
+
+## Load libraries
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+suppressPackageStartupMessages({
+  library(Seurat); library(tidyverse);
+  library(RCurl); library(RColorBrewer);
+  library(ggplot2); library(ggpubr);
+  source('./helper.R')
+})
+
+```
+
+## load data
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+load('./data/mice_cycle.rds')
+load(file="data/seurat_filtered.RData")
+```
+
+## explore cell cycle distribution - a typical source of unwanted variation
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+seurat_phase <- NormalizeData(filtered_seurat)
+seurat_phase <- CellCycleScoring(seurat_phase, g2m.features = g2m_genes, s.features = s_genes)
+seurat_phase <- FindVariableFeatures(seurat_phase, selection.method = "vst", nfeatures = 3000, verbose = FALSE)
+seurat_phase <- ScaleData(seurat_phase)
+seurat_phase <- RunPCA(seurat_phase)
+DimPlot(seurat_phase, reduction = "pca", group.by= "Phase", split.by = 'Phase')
+DimPlot(seurat_phase, reduction = "pca", group.by= "sample")
+DimPlot(seurat_phase, reduction = "pca", group.by= "batch")
+```
+
+## what does the umap look like w/o regress cc ?
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+seurat_wo_integration <- NormalizeData(filtered_seurat)
+seurat_wo_integration <- FindVariableFeatures(seurat_wo_integration, selection.method = "vst", nfeatures = 3000, verbose = FALSE)
+seurat_wo_integration <- ScaleData(seurat_wo_integration)
+seurat_wo_integration <- RunPCA(object = seurat_wo_integration, npcs = 40)
+
+Idents(seurat_wo_integration) <- 'sample'
+levels(Idents(seurat_wo_integration)) <- c('nonexpanded', 'expanded')
+PCAPlot(seurat_wo_integration, dims = c(1,2))+ theme_bp
+ElbowPlot(seurat_wo_integration)
+```
+```{r include=TRUE, results=False, message = False, echo=FALSE, warning=FALSE}
+seurat_wo_integration <- RunUMAP(seurat_wo_integration, 
+                             dims = 1:16,
+                             reduction = "pca")
+```
+## w/o integration
+```{r include=TRUE, results=False, message = False, echo=FALSE, warning=FALSE}
+DimPlot(seurat_wo_integration,group.by = 'batch')
+DimPlot(seurat_wo_integration,group.by = 'sample')
+
+```
+
+
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+options(future.globals.maxSize = 10000 * 1024^10)
+split_seurat <- SplitObject(filtered_seurat, split.by = "orig.ident")
+split_seurat
+set.seed(3)
+start_time <- Sys.time()
+for (i in 1:length(split_seurat)) {
+  split_seurat[[i]] <- NormalizeData(split_seurat[[i]], verbose =FALSE)
+  split_seurat[[i]] <- CellCycleScoring(split_seurat[[i]], g2m.features=g2m_genes, s.features=s_genes)
+  split_seurat[[i]] <- SCTransform(split_seurat[[i]], vars.to.regress = c("mitoRatio",'S.Score','G2M.Score'))
+}
+
+integ_features <- SelectIntegrationFeatures(object.list = split_seurat, nfeatures = 3000) 
+split_seurat <- PrepSCTIntegration(object.list = split_seurat,　anchor.features = integ_features)
+integ_anchors <- FindIntegrationAnchors(object.list = split_seurat,  normalization.method = "SCT", anchor.features = integ_features)
+seurat_integrated <- IntegrateData(anchorset = integ_anchors,　normalization.method = "SCT")
+end_time <- Sys.time()
+end_time - start_time
+# saveRDS(seurat_integrated, "results/seurat_integrated_mito_cc_3000_x.rds")
+```

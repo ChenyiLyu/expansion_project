@@ -1,0 +1,348 @@
+---
+title: "gene expression change in different cell type associate with expansion"
+output:
+  html_document:
+    df_print: paged
+---
+### Load library
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+# Load libraries
+suppressPackageStartupMessages({
+  library(slingshot); library(SingleCellExperiment); library(tradeSeq);
+  library(Seurat); library(tidyverse);
+  library(RCurl); library(cowplot);
+  
+  library(openxlsx); library(ggplot2);library(qusage);
+  library(dplyr); library(patchwork); library(ggpubr);
+  library(RColorBrewer); source('./helper.R'); 
+})
+# futile.logger::flog.threshold(futile.logger::ERROR, name = "VennDiagramLogger")
+```
+
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+# Load data
+seurat_integrated <- readRDS('./results/seurat_annotated_remove_mito.rds')
+```
+
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+# Condition marker (condition as group, against each other)
+DefaultAssay(seurat_integrated) <- 'RNA'
+seurat_integrated <- NormalizeData(seurat_integrated)
+seurat_integrated <- ScaleData(seurat_integrated)
+Idents(object = seurat_integrated) <- "sample"
+levels(seurat_integrated) <- c('nonexpanded','expanded')
+stim.markers <- FindAllMarkers(seurat_integrated, only.pos = TRUE, logfc.threshold = 0.25)
+top10_stim <- stim.markers %>% group_by(cluster) %>%  top_n(n = 10, wt = avg_log2FC)
+
+DoHeatmap(seurat_integrated, features = top10_stim$gene, size = 4, angle = 45,label = FALSE,draw.lines = TRUE) +
+  theme_hm_DE +
+  scale_fill_gradientn(guide = 'colourbar', 
+                       colours = rev(brewer.pal(n=11,name = "RdBu")))+
+  ggtitle('Stimulation Markers') + ggsave('./filtered_sum/hm_DE_bystim.pdf', height = 10,width = 8)
+write.xlsx(stim.markers,"./filtered_sum/DE_bystim.xlsx", row.names = FALSE)
+
+```
+
+# DGE cross condition in main cell types 
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+mainGroups <- SplitObject(seurat_integrated,split.by = 'mainGroup')
+
+# basal
+basal <- mainGroups$Basal
+basal <- NormalizeData(basal,verbose = FALSE)
+basal <- ScaleData(basal, verbose = FALSE)
+
+Idents(object = basal) <- "sample"
+levels(basal) <- c('nonexpanded','expanded')
+stim.markers <- FindAllMarkers(basal, only.pos = TRUE, min.pct = 0.25,logfc.threshold = 0.25)
+top10_stim <- stim.markers %>% group_by(cluster) %>%  top_n(n = 10, wt = avg_log2FC)
+DoHeatmap(basal, features = top10_stim[which(top10_stim$p_val_adj<0.05),]$gene, size = 6,label = FALSE,draw.lines = TRUE)+
+  theme_hm_DE+
+  scale_fill_gradientn(guide = 'colourbar', 
+                       colours = rev(brewer.pal(n=11,name = "RdBu")))
+ggsave('./filtered_sum/hm_DE_basal_by_stim.pdf', width = 4, height = 4)
+write.xlsx(stim.markers,"./filtered_sum/DE_basal_by_stim.xlsx", row.names = FALSE)
+
+# spinous
+spinous <- mainGroups$Spinous
+spinous <- NormalizeData(spinous,verbose = FALSE)
+spinous <- ScaleData(spinous, verbose = FALSE)
+
+Idents(object = spinous) <- "sample"
+levels(spinous) <- c('nonexpanded','expanded')
+stim.markers <- FindAllMarkers(spinous, only.pos = TRUE, min.pct = 0.25,logfc.threshold = 0.25)
+top10_stim <- stim.markers %>% group_by(cluster) %>%  top_n(n = 10, wt = avg_log2FC)
+DoHeatmap(spinous, features = top10_stim[which(top10_stim$p_val_adj<0.05),]$gene, size = 6,label = FALSE,draw.lines = TRUE)+
+  theme_hm_DE+
+  scale_fill_gradientn(guide = 'colourbar', 
+                       colours = rev(brewer.pal(n=11,name = "RdBu")))
+ggsave('./filtered_sum/hm_DE_spinous_by_stim.pdf', width = 4, height = 4)
+write.xlsx(stim.markers,"./filtered_sum/DE_spinous_by_stim.xlsx", row.names = FALSE)
+
+# HF
+HF <- mainGroups$HF
+HF <- NormalizeData(HF,verbose = FALSE)
+HF <- ScaleData(HF, verbose = FALSE)
+
+Idents(object = HF) <- "sample"
+levels(HF) <- c('nonexpanded','expanded')
+stim.markers <- FindAllMarkers(HF, only.pos = TRUE, min.pct = 0.25,logfc.threshold = 0.25)
+top10_stim <- stim.markers %>% group_by(cluster) %>%  top_n(n = 10, wt = avg_log2FC)
+DoHeatmap(HF, features = top10_stim[which(top10_stim$p_val_adj<0.05),]$gene, size = 6,label = FALSE,draw.lines = TRUE)+
+  theme_hm_DE+
+  scale_fill_gradientn(guide = 'colourbar', 
+                       colours = rev(brewer.pal(n=11,name = "RdBu")))
+ggsave('./filtered_sum/hm_DE_HF_by_stim.pdf',width=4,height=4)
+write.xlsx(stim.markers,"./filtered_sum/DE_HF_by_stim.xlsx", row.names = FALSE)
+
+# immune_cell
+immune_cell <- mainGroups$Immune_cell
+immune_cell <- NormalizeData(immune_cell,verbose = FALSE)
+immune_cell <- ScaleData(immune_cell, verbose = FALSE)
+
+Idents(object = immune_cell) <- "sample"
+levels(immune_cell) <- c('nonexpanded','expanded')
+stim.markers <- FindAllMarkers(immune_cell, only.pos = TRUE, min.pct = 0.25,logfc.threshold = 0.25)
+top10_stim <- stim.markers %>% group_by(cluster) %>%  top_n(n = 10, wt = avg_log2FC)
+DoHeatmap(immune_cell, features = top10_stim[which(top10_stim$p_val_adj<0.05),]$gene, size = 6,label = FALSE,draw.lines = TRUE)+
+  theme_hm_DE+
+  scale_fill_gradientn(guide = 'colourbar', 
+                       colours = rev(brewer.pal(n=11,name = "RdBu")))
+ggsave('./filtered_sum/hm_DE_immune_cell_by_stim.pdf',width = 4, height=4)
+write.xlsx(stim.markers,"./filtered_sum/DE_immune_cell_by_stim.xlsx", row.names = FALSE)
+
+# SG
+SG <- mainGroups$SG
+SG <- NormalizeData(SG,verbose = FALSE)
+SG <- ScaleData(SG, verbose = FALSE)
+
+Idents(object = SG) <- "sample"
+levels(SG) <- c('nonexpanded','expanded')
+stim.markers <- FindAllMarkers(SG, only.pos = TRUE, min.pct = 0.25,logfc.threshold = 0.25)
+top10_stim <- stim.markers %>% group_by(cluster) %>%  top_n(n = 10, wt = avg_log2FC)
+DoHeatmap(SG, features = top10_stim[which(top10_stim$p_val_adj<0.05),]$gene, size = 6,label = FALSE,draw.lines = TRUE)+
+  theme_hm_DE+
+  scale_fill_gradientn(guide = 'colourbar', 
+                       colours = rev(brewer.pal(n=11,name = "RdBu")))
+ggsave('./filtered_sum/hm_DE_SG_by_stim.pdf',width =4,height=4)
+write.xlsx(stim.markers,"./filtered_sum/DE_SG_by_stim.xlsx", row.names = FALSE)
+
+```
+### DEG overlapping
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+DE_ct <- read.xlsx('./filtered_sum/de_groups/results/group_deg_summary.xlsx',sheet = 'deg',colNames = TRUE)
+
+basal <- DE_ct[,1]
+HF <- DE_ct[,2]
+spinous <- DE_ct[,3]
+up_genes <- venn_plot(basal, HF, spinous, 'up', file = "./filtered_sum/up_reg_de.pdf")
+basal <- DE_ct[,4] 
+HF <- DE_ct[,5]
+spinous <- DE_ct[,6]
+down_genes <- venn_plot(basal, HF, spinous, 'down', file = './filtered_sum/down_reg_de.pdf')
+
+write.xlsx(as.data.frame(up_genes),'./filtered_sum/de_groups/genes.xlsx')
+```
+
+# GSEA
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+library(presto)
+library(msigdbr)
+library(fgsea)
+library(enrichplot)
+library(GSEABase)
+library(clusterProfiler)
+```
+### GSEA database
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+m_df <- msigdbr(species = "Mus musculus", category = 'H')
+head(m_df)
+fgsea_sets<- m_df %>% 
+  select(., gs_name, gene_symbol) %>% 
+  rename(term = gs_name, gene = gene_symbol)
+head(fgsea_sets)
+```
+### find the DE
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+ct <- xxx
+Idents(ct) <- 'sample'
+deg_ct <- wilcoxauc(ct,group_by = 'sample')
+deg_ct <- subset(deg_ct, group == 'expanded')
+gene_list_ct <- deg_ct$logFC
+names(gene_list_ct) <- deg_ct$feature
+gene_list_ct <- sort(gene_list_ct,decreasing = T)
+head(gene_list_ct)
+```
+
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+gmt_ct <- GSEA(gene_list_ct, TERM2GENE = fgsea_sets, minGSSize = 3, pvalueCutoff = 0.99, verbose = FALSE)
+gsea_df_ct <- gmt_ct@result %>% dplyr::filter(., setSize > 5 & p.adjust < 0.05)
+view(gsea_df_ct)
+write.xlsx(gsea_df_ct, file = './filtered_sum/de_groups/gsea_results_c5_xxx.xlsx')
+```
+
+### Visualization
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+go_results <- read.xlsx('./filtered_sum/de_groups/results/gsea_results.xlsx',sheet = 'up',colNames = TRUE)
+all <- names(table(go_results$Term))
+all <- all[order(match(all,go_results$Term[which(go_results$cluster=='Basal')]))]
+
+# low='lightyellow2',high='red4'
+
+# plot: dot plot
+ggplot(data = go_results, aes(x = cluster, y = Term, color =`-LOG10(qvalues)`,
+                        size = NES)) + 
+  geom_point() +
+  scale_x_discrete(limits=c('Basal', 'Spinous','HF'))+
+  scale_y_discrete(limits=all)+
+  scale_color_gradient(low='gold',high='red3', guide = guide_colorbar(frame.colour = "black", ticks.colour = "black",frame.linewidth = 2, ticks.linewidth = 2,),)+
+  scale_radius(range = c(4,6))+
+  theme_bw() + 
+  theme(aspect.ratio = 1,
+        axis.text.y = element_text(size=10),
+        axis.text.x = element_text(size=10),
+                   plot.title = element_text(color="black", size=14, face="bold"),
+                   legend.text = element_text(size = 10),
+                   legend.title = element_text(size=14))+
+  ylab("") + 
+  xlab("") + 
+  ggtitle("Upregulated GSEA terms")+
+  ggsave('./gsea_up_dp.pdf',width=10,height = 5)
+```
+
+### Visualize TOP features
+```{r}
+Idents(seurat_integrated) <- 'mainGroup'
+up_reg_top10 <- rev(up_genes[1:10])
+down_reg_top10 <- rev(down_genes[1:10])
+seurat_main_cluster_dotplot <- subset(seurat_integrated, idents = c('Basal', 'Spinous', 'HF'))
+DefaultAssay(seurat_main_cluster_dotplot) <- 'RNA'
+seurat_main_cluster_dotplot <- NormalizeData(seurat_main_cluster_dotplot)
+
+# rename cluster idents
+seurat_main_cluster_dotplot$cluster_sample <- ''
+seurat_main_cluster_dotplot$cluster_sample[which(seurat_main_cluster_dotplot$sample == 'expanded' & seurat_main_cluster_dotplot$mainGroup == 'Basal' )] <- 'basal_e'
+seurat_main_cluster_dotplot$cluster_sample[which(seurat_main_cluster_dotplot$sample == 'expanded' & seurat_main_cluster_dotplot$mainGroup == 'Spinous' )] <- 'spinous_e'
+seurat_main_cluster_dotplot$cluster_sample[which(seurat_main_cluster_dotplot$sample == 'expanded' & seurat_main_cluster_dotplot$mainGroup == 'HF' )] <- 'HF_e'
+seurat_main_cluster_dotplot$cluster_sample[which(seurat_main_cluster_dotplot$sample == 'nonexpanded' & seurat_main_cluster_dotplot$mainGroup == 'Basal' )] <- 'basal_ne'
+seurat_main_cluster_dotplot$cluster_sample[which(seurat_main_cluster_dotplot$sample == 'nonexpanded' & seurat_main_cluster_dotplot$mainGroup == 'Spinous' )] <- 'spinous_ne'
+seurat_main_cluster_dotplot$cluster_sample[which(seurat_main_cluster_dotplot$sample == 'nonexpanded' & seurat_main_cluster_dotplot$mainGroup == 'HF' )] <- 'HF_ne'
+
+DotPlot(seurat_main_cluster_dotplot, features = c(down_reg_top10, up_reg_top10), assay = "RNA",group.by = 'cluster_sample') + theme_linedraw()+RotatedAxis() + coord_flip()+scale_y_discrete(limits=c('basal_ne','spinous_ne','HF_ne','basal_e','spinous_e','HF_e')) +ggsave('./filtered_sum/de_groups/top_deg_exprs.pdf',height = 5,width=6)
+
+```
+
+### GO enrichment
+# ```{r}
+# # up
+# go_enrich <- read.xlsx('./filtered_sum/DE_celltype/gProfiler_3celltype_up.xlsx',sheet = 'Sheet1',colNames = TRUE)
+# 
+# ggplot(data = go_enrich, aes(x = term_name, y =`-Log10(pval-adj)`, size = Count))+
+#   geom_point(color='red')+
+#   scale_radius(range = c(4,10))+
+#   geom_text(label = go_enrich$term_name, position = position_stack(vjust = .5), check_overlap =T, size =4)+
+#   scale_x_discrete(limits = go_enrich$term_name)+
+#   coord_flip()+
+#   theme_bw() + 
+#   labs(title = 'GO enrichment analysis of shared upregulated genes', x='')+
+#   theme(axis.text.y = element_blank(),
+#         axis.text.x = element_text(size = 14),
+#                    plot.title = element_text(color="black", size=14, face="bold"),
+#                    legend.text = element_text(size = 10),
+#                    legend.title = element_text(size = 14))+
+#   ggsave(file = 'down.png',width=10,height = 5)
+# ```
+
+# GO scoring
+###
+```{r}
+Idents(seurat_integrated) <- 'mainGroup'
+seurat_main_cluster <- subset(seurat_integrated, idents = c('Basal', 'Spinous', 'HF'))
+DefaultAssay(seurat_main_cluster) <- 'RNA'
+seurat_main_cluster <- NormalizeData(seurat_main_cluster)
+seurat_main_cluster <- ScaleData(seurat_main_cluster)
+seurat_main_cluster$sample <- factor(seurat_main_cluster$sample, levels = c('nonexpanded','expanded'))
+levels(Idents(seurat_main_cluster)) <- c('Spinous','Basal', 'HF')
+```
+
+## AddModuleScore for specific gene list
+```{r message=FALSE, warning=FALSE, results='hide'}
+folder <- list.files('./gene_sets/')
+fn <- 'selected_sp'
+genesets <- list.files(paste0('./gene_sets/', fn))
+genesets
+
+for (geneset in genesets) {
+  genes <- read.gmt(paste0('./gene_sets/', fn, '/',  geneset))
+  genes[[1]] <- genes[[1]] %>% tolower() %>% capFirst()
+  genes
+  geneset <- gsub('.gmt','',geneset)
+  geneset
+  seurat_main_cluster <- AddModuleScore(
+    object = seurat_main_cluster,
+    features = genes,
+    name = geneset, search =TRUE)
+} 
+setname <- c()
+for (geneset in genesets) {
+  geneset <- gsub('.gmt','',geneset)
+  setname <- c(setname,paste0(geneset,'1'))
+}
+setname <- unlist(setname)
+VlnPlot(seurat_main_cluster,features = setname,group.by = 'mainGroup',split.by = 'sample',flip=TRUE,stack = TRUE,pt.size = 0,combine = TRUE)+
+  scale_fill_manual(values = c('#DDAA33','#33BBEE'))+
+  geom_boxplot(width=0.1, color="black", outlier.shape = NA,alpha=0.2, position=position_dodge(width = 0.9))+
+  stat_compare_means(method = 'wilcox.test',label = "p.signif",vjust=2)+
+  ggsave('./filtered_sum/de_groups/group_score_bp_sep.pdf',height = 10,width=10)
+
+#saveRDS(seurat_main_cluster,'./seurat_main_cluster_score.rds')
+```
+### plot seperately
+```{r message=FALSE, warning=FALSE, results='hide'}
+setname <- "GO_PHOSPHATIDYLINOSITOL_3_KINASE_SIGNALING1"
+
+VlnPlot(seurat_main_cluster,features = setname,group.by = 'mainGroup',split.by = 'sample',pt.size = 0,flip=TRUE) + 
+  scale_fill_manual(values = c('#DDAA33','#33BBEE'))+
+  geom_boxplot(width=0.2, color="black", outlier.shape = NA,alpha=0.2, position=position_dodge(width = 0.9))+theme_bw(base_line_size = 0) + 
+  stat_compare_means(method = 'wilcox.test',label = "p.signif",vjust=2)+
+  ggsave('./filtered_sum/de_groups/group_score_pi3k.pdf', height = 4,width=5)
+```
+
+```{r}
+# Selected genes
+DefaultAssay(seurat_main_cluster) <- 'RNA'
+
+hippo <- c('Yap1', 'Wwtr1', 'Lats1','Sav1','Mob1a','Mob1b')
+yap_dn <- c('Amotl1', 'Amotl2', 'Myc','Tgfb1','Myd88','Itgb1', 'Nfkb1', 'Nfkb2')
+pi3k_akt <- c('Akt1','Akt2','Mtor','Itgb1','Hif1a', 'Vegfa')
+hh <- c('Ptk2', 'Pak1','Banf1','Smo','Ptch1','Piezo1','Vcl','Itgb1','Cdh1','Lmna')
+basal_markers <- c('Krt14', 'Aspn', 'Postn', 'Krt79', 'Krt6a','Gli1','Lgr6','tdTomato','Plet1')
+IFE_markers <- c('Krt14','Mt4','Krt10','Lor','')
+g <- c('Yap1', 'Wwtr1','Myc','Amotl1','Itgb1', 'Vcl','Hif1a')
+ptwy <- list(hippo)
+
+Idents(seurat_main_cluster) <- 'mainGroup'
+seurat_main_cluster$sample <- factor(seurat_main_cluster$sample, levels = c('nonexpanded','expanded'))
+
+for (i in ptwy) {
+  goi <- i
+  print(VlnPlot(seurat_main_cluster,features=goi,group.by = 'sample', split.by = 'sample',pt.size = 0, flip = TRUE,stack = FALSE)+
+          stat_summary(fun = mean, geom='point', position=position_dodge(width = 0.9), size = 6, colour = "black", shape = 95)+
+  stat_compare_means(method = 'wilcox.test',vjust=2,hjust = 3,label = "p.signif")+
+  scale_fill_manual(values = c('#DDAA33','#33BBEE')))+theme_bw(base_line_size = 0)+
+  ggsave('./hh.pdf',height = 5,width=8)
+}
+
+
+VlnPlot(seurat_main_cluster,features=c('Hif1a'),group.by = 'sample',split.by = 'sample',pt.size = 0, flip = TRUE)+
+  stat_compare_means(method = 'wilcox.test',vjust=3,hjust = -1.5,label = "p.signif")+
+  scale_fill_manual(values = c('#DDAA33','#33BBEE'))+theme_bw(base_line_size = 0)+
+  ggsave('./m_Hif1a.pdf',height = 5,width=5)
+```
+
+
+```{r}
+intersect(intersect(gsea_basal$Description,gsea_hf$Description),gsea_spinous$Description)
+
+```
+

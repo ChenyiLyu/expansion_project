@@ -1,0 +1,401 @@
+---
+title: "Slingshot"
+output:
+  pdf_document: default
+  html_document: default
+---
+#Overview
+* seperate lgr6 progenitor nad progenies.
+* establish appropriate trajectory for both condition
+* 
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+suppressPackageStartupMessages({
+  library(slingshot); library(SingleCellExperiment);library(Seurat);
+  library(RColorBrewer); library(scales)
+  library(viridis); library(UpSetR)
+  library(pheatmap); library(msigdbr)
+  library(fgsea); library(knitr)
+  library(ggplot2); library(gridExtra);
+  library(tradeSeq);source('helper.R')
+})
+
+```
+## screen for cells that either expressing lgr6 or tdt. Total representing for lgr6 cell progenitor and progenies
+```{r}
+seurat_integrated <- readRDS('./results/seurat_annotated_remove_mito.rds')
+DefaultAssay(seurat_integrated) <- 'RNA'
+lgr6_prog <- WhichCells(seurat_integrated, slot = 'counts', expression = `tdTomato` > 0 | `Lgr6` > 0) %>% subset(seurat_integrated,cells = .)
+Idents(lgr6_prog) <- 'sample'
+levels(lgr6_prog) <- c('nonexpanded', 'expanded')
+PCAPlot(lgr6_prog,dims = c(1,2))
+```
+
+## Integration
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+# Load data
+lgr6_prog <- readRDS('./results/lgr6_prog.rds')
+saveRDS(lgr6_prog,file ='./results/lgr6_prog.rds' )
+load('./data/mice_cycle.rds')
+# Rename clusters
+Idents(object = lgr6_prog) <- "byMarkers"
+lgr6_prog$upd_anno <- Idents(RenameIdents(lgr6_prog, 
+                                        "Basal"='Basal', 
+                                        "Prolif_basal" ='Prolif_basal',
+                                        "Spinous I"='Spinous I', 
+                                        "Spinous II" ='Spinous II', 
+                                        "Spinous III" ='Spinous III',
+                                        "HF II" ='HF II', 
+                                        "HF I" ='Infundibulum',
+                                        "HF III" ='uHF',
+                                        "HF IV" ='uHF',
+                                        "HF V" ='HFSC',
+                                        "HFSC" ='HFSC',
+                                        "Immune_cell"='Immune_cell', 
+                                        'SG' = "SG"))
+Idents(object = lgr6_prog) <- "upd_anno"
+lgr6_prog_ti <- subset(lgr6_prog, idents = c('Basal', 'uHF', 'Spinous I','Spinous II',  'Spinous III'))
+```
+
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+# Integration to remove technical variations
+lgr6_prog_ti <- readRDS(file = './results/lgr6_prog_ti.rds')
+split_seurat <- SplitObject(lgr6_prog_ti, split.by = "orig.ident")
+start_time <- Sys.time()
+for (i in 1:length(split_seurat)) {
+  split_seurat[[i]] <- NormalizeData(split_seurat[[i]], verbose =FALSE)
+  split_seurat[[i]] <- CellCycleScoring(split_seurat[[i]], g2m.features=g2m_genes, s.features=s_genes)
+  split_seurat[[i]] <- SCTransform(split_seurat[[i]], vars.to.regress = c("mitoRatio",'S.Score','G2M.Score'))
+}
+
+integ_features <- SelectIntegrationFeatures(object.list = split_seurat, nfeatures = 3000) 
+split_seurat <- PrepSCTIntegration(object.list = split_seurat,　anchor.features = integ_features)
+integ_anchors <- FindIntegrationAnchors(object.list = split_seurat,  normalization.method = "SCT", anchor.features = integ_features)
+seurat_integrated <- IntegrateData(anchorset = integ_anchors,　normalization.method = "SCT")
+end_time <- Sys.time()
+end_time - start_time # 11.16913 mins
+seurat_integrated <- RunPCA(seurat_integrated)
+seurat_integrated <- RunUMAP(seurat_integrated, dims = 1:50)
+```
+
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+seurat_integrated <- readRDS(file = './results/seurat_integrated_ti.rds')
+DefaultAssay(seurat_integrated) <- "integrated"
+DimPlot(seurat_integrated, group.by = 'byMarkers')
+DimPlot(seurat_integrated, group.by = 'subcluster')
+DefaultAssay(seurat_integrated) <- "RNA"
+FeaturePlot(seurat_integrated, 
+            features = c("Lgr6","tdTomato",'Ifitm3','Krt1','Ptgs1','Krt6b','Sparc'),
+            label = FALSE, 
+            sort.cell = TRUE,
+            repel = TRUE
+)
+DefaultAssay(seurat_integrated) <- "integrated"
+```
+
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+# convert to singleCellExperiment
+sce <- as.SingleCellExperiment(seurat_integrated, assay = "RNA")
+sce$sample <- factor(sce$sample, levels = c('nonexpanded','expanded'))
+sce$upd_anno <- factor(sce$upd_anno, levels = c('uHF','Basal','Spinous I','Spinous II','Spinous III'))
+sce$subcluster <- factor(sce$subcluster, levels = c('Spinous', 'Basal','HF'))
+```
+
+## cell distribution
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+# Visualize the distribution of cells in this space according to the treatment (control and TGFB) and spatial location (inner cells versus outer cells)
+shuffle <- sample(ncol(sce))
+layout(matrix(1:2, nrow = 1))
+par(mar = c(4.5,4,1,1))
+
+plot(reducedDims(sce)$UMAP[shuffle, ],
+  asp = 1, pch = 16, xlab = "UMAP-1", ylab = "UMAP-2",
+  col = alpha(c(1:2)[factor(colData(sce)$sample)][shuffle], alpha = .5))
+legend("topright", pch = 16, col = 1:2, bty = "n", 
+       legend = levels(factor(colData(sce)$sample)))
+plot(reducedDims(sce)$UMAP[shuffle, ], asp = 1, pch = 16, xlab = "UMAP-1", ylab = "UMAP-2", 
+     col = alpha(c(3:9)[factor(colData(sce)$subcluster)][shuffle], alpha = .5))
+legend("topright", pch = 16, col = 3:9, bty = "n", legend = levels(factor(colData(sce)$subcluster)))
+layout(1)
+par(mar = c(5, 4, 4, 2) + .1)
+```
+
+## Imbalance score
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+scores <- bioc2020trajectories::imbalance_score(
+  rd = reducedDims(sce)$UMAP, 
+  cl = colData(sce)$sample,
+  k = 20, smooth = 40)
+grad <- viridis::plasma(10, begin = 0, end = 1)
+names(grad) <- levels(cut(scores$scaled_scores, breaks = 10))
+plot(reducedDims(sce)$UMAP, col = grad[cut(scores$scaled_scores, breaks = 10)],
+     asp = 1, pch = 16, xlab = "UMAP-1", ylab = "UMAP-2", cex = .8)
+legend("topleft", legend = names(grad), col = grad, pch = 16, bty = "n", cex = 2 / 3)
+```
+```{r}
+set.seed(42)
+sce <- slingshot(sce, reducedDim = 'UMAP', clusterLabels = colData(sce)$subcluster,start.clus = 'HF', approx_points =150)
+```
+
+## order cells by progression //TODO 3 lineages
+```{r plotSlingshot, echo = FALSE, fig.width =  8}
+crv <- SlingshotDataSet(sce)
+pseudotime <- slingPseudotime(crv, na=FALSE)
+cellWeights <- slingCurveWeights(crv)
+
+layout(matrix(c(1, 1, 2, 3), 2))
+par(mar = c(4.5, 4, 1, 1))
+plot(reducedDims(sce)$UMAP[shuffle, ], asp = 1, pch = 16, xlab = "UMAP-1", ylab = "UMAP-2",
+  col = hcl.colors(100, alpha = .5)[cut(pseudotime, breaks = 100)][shuffle])
+lines(SlingshotDataSet(sce))
+# Pseudotime densities (by spatial)
+ds <- list(HF = density(slingPseudotime(sce)[colData(sce)$subcluster == "HF", 1]),
+           Basal = density(slingPseudotime(sce)[colData(sce)$subcluster == "Basal", 1]),
+           Spinous = density(slingPseudotime(sce)[colData(sce)$subcluster == "Spinous", 1]))
+xlim <- range(c(ds$HF$x, ds$Basal$x, ds$Spinous$x))
+ylim <- range(c(ds$HF$y, ds$Basal$y, ds$Spinous$y))
+plot(xlim, ylim, col = "white", xlab = "Pseudotime", ylab = "")
+polygon(c(min(ds$Spinous$x), ds$HF$x, max(ds$HF$x)), c(0, ds$Spinous$y, 0),
+        col = alpha(brewer.pal(4, "Set1")[1], alpha = .5))
+polygon(c(min(ds$HF$x), ds$HF$x, max(ds$HF$x)), c(0, ds$HF$y, 0),
+  col = alpha(brewer.pal(4, "Set1")[2], alpha = .5))
+polygon(c(min(ds$Basal$x), ds$HF$x, max(ds$HF$x)), c(0, ds$Basal$y, 0),
+        col = alpha(brewer.pal(4, "Set1")[3], alpha = .5))
+legend("topleft", legend = c("Basal","HF", "Spinous") , 
+       fill = alpha(brewer.pal(4, "Set1")[3:1], alpha = .5), bty = "n")
+
+plot(reducedDims(sce)$UMAP[shuffle, ], asp = 1, pch = 16, xlab = "UMAP-1", ylab = "UMAP-2", 
+     col = alpha(c(2, 3, 4)[factor(colData(sce)$subcluster)][shuffle], alpha = .5))
+lines(SlingshotDataSet(sce), type = 'lineages', show.constraints = TRUE)
+legend("topright", pch = 16, col = c(2,3,4), bty = "n", legend = levels(factor(colData(sce)$subcluster)))
+layout(1)
+par(mar = c(5, 4, 4, 2) + .1)
+```
+```{r plotDensities, echo=FALSE, fig.height=4}
+# Pseudotime densities (by treatment)
+pt <- slingPseudotime(sce)
+# curve1
+ne_cells <- na.omit(pt[colData(sce)$sample == "nonexpanded", 1])
+e_cells <- na.omit(pt[colData(sce)$sample == "expanded", 1])
+ds <- list(nonexpanded = density(ne_cells), expanded = density(e_cells))
+xlim <- range(c(ds$nonexpanded$x, ds$expanded$x))
+ylim <- range(c(ds$nonexpanded$y, ds$expanded$y))
+plot(xlim, ylim, col = "white", xlab = "Pseudotime", ylab = "")
+polygon(c(min(ds$nonexpanded$x),ds$nonexpanded$x,max(ds$nonexpanded$x)),
+		c(0,ds$nonexpanded$y,0), col = rgb(0,0,0,.5))
+polygon(c(min(ds$expanded$x),ds$nonexpanded$x,max(ds$nonexpanded$x)),
+		c(0,ds$expanded$y,0), col = alpha(brewer.pal(4,'Set1')[1], alpha = .5))
+legend("topright", legend = c("nonexpanded", "expanded"), 
+       fill = alpha(c(1, brewer.pal(3, "Set1")[1]), alpha = .5), bty = "n")
+```
+
+```{r}
+########################
+### Kolmogorov-Smirnov Test
+########################
+ks.test(slingPseudotime(sce)[colData(sce)$sample == "nonexpanded", 1],
+        slingPseudotime(sce)[colData(sce)$sample == "expanded", 1])
+
+```
+## Differential expression
+@source https://statomics.github.io/tradeSeq/articles/fitGAM.html
+```{r evaluateK, eval=FALSE}
+crv <- slingCurves(sce)
+pseudotime <- slingPseudotime(crv, na=FALSE)
+cellWeights <- slingCurveWeights(crv)
+# 5h to run, choose 5 knots
+set.seed(42)
+start_time <- Sys.time()
+icMat <- evaluateK(counts = as.matrix(assays(sce)$counts), 
+                   pseudotime = pseudotime, 
+                   cellWeights = cellWeights,
+                   conditions = factor(colData(sce)$sample), 
+                   k=3:7, nGenes = 200, verbose = FALSE, plot = TRUE,parallel = TRUE, BPPARAM = BPPARAM)
+end_time <- Sys.time()
+end_time- start_time #Time difference of -1.119382 hours 1.723834 hours
+
+# saveRDS(icMat,file = './filtered_sum/cMat_evaluatek_200_37.rds')
+```
+```{r}
+lgr6_prog_ti <- NormalizeData(lgr6_prog_ti)
+lgr6_prog_ti <- FindVariableFeatures(lgr6_prog_ti, nfeatures = 2000)
+genes <- VariableFeatures(lgr6_prog_ti)
+# genes <- c('Krt6b','Krt10','Krt17','Mki67','Krt14','Postn','Ifitm3','Ptgs1','Sparc','S100a8')
+```
+
+```{r}
+BPPARAM <- BiocParallel::bpparam()
+BPPARAM # lists current options
+BPPARAM$workers <- 4 # use 4 cores
+# fit gam, return fitted model
+set.seed(3)
+start_time <- Sys.time()
+gam_sce <- fitGAM(counts = sce,
+                   conditions = factor(colData(sce)$sample),
+                  genes = genes,
+                  nknots = 5, verbose = FALSE, parallel=TRUE, BPPARAM = BPPARAM)
+end_time <- Sys.time()
+start_time - end_time 
+# Time difference of -1.852349 mins
+# Time difference of -1.803964 hours
+```
+
+```{r}
+gam_sce <- readRDS(file = './results/gam_sce.rds')
+```
+
+```{r}
+mean(rowData(gam_sce)$tradeSeq$converged)
+# Test gene convergence
+table(rowData(gam_sce)$tradeSeq$converged)
+```
+
+## assess de along pseudotime
+```{r}
+rowData(gam_sce)$assocRes <- associationTest(gam_sce, lineages = TRUE, l2fc = log2(2))
+assocRes <- rowData(gam_sce)$assocRes
+```
+
+```{r}
+# lin1
+neGenes <-  rownames(assocRes)[
+  which(p.adjust(assocRes$pvalue_lineage1_conditionnonexpanded, "fdr") <= 0.05)
+]
+eGenes <-  rownames(assocRes)[
+  which(p.adjust(assocRes$pvalue_lineage1_conditionexpanded, "fdr") <= 0.05)
+]
+length(neGenes)
+length(eGenes)
+UpSetR::upset(fromList(list(nonexpanded = neGenes, expanded = eGenes)))
+
+```
+#### Visualization of DE genes
+Below we visualize and cluster the genes whose expression vary over pseudotime, using the smoothed expression patterns
+As was also observed in the original manuscript, genes are mainly upregulated at the start- or endpoints of the lineage.
+
+```{r}
+## based on mean smoother lin1
+yhatSmooth <- predictSmooth(gam_sce, gene = neGenes, nPoints = 50, tidy = FALSE)
+heatSmooth <- pheatmap(t(scale(t(yhatSmooth[, 1:50]))),
+                       cluster_cols = FALSE,
+                       show_rownames = FALSE, 
+                       show_colnames = FALSE)
+cl <- sort(cutree(heatSmooth$tree_row, k = 6))
+table(cl)
+
+conditions <- colData(sce)$sample
+pt1 <- colData(sce)$slingPseudotime_1
+## based on fitted values (plotting takes a while to run)
+yhatCell <- predictCells(gam_sce, gene=neGenes)
+yhatCellNE <- yhatCell[,conditions == "nonexpanded"]
+# order according to pseudotime
+ooNE <- order(pt1[conditions == "nonexpanded"], decreasing=FALSE)
+yhatCellNE <- yhatCellNE[,ooNE]
+pheatmap(t(scale(t(yhatCellNE))), cluster_cols = FALSE,
+          show_rownames = FALSE, show_colnames=FALSE)
+
+```
+#### Gene set enrichment analysis on genes from the NE condition
+Gene set enrichment analysis on the NE genes within the mock condition confirms the biology on epithelial cell differentiation.
+```{r}
+# C5 category is according to gene ontology grouping: https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4707969/pdf/nihms-743907.pdf
+geneSets <- msigdbr(species = "Mus musculus", category = "C5", subcategory = "BP")
+## filter background to only include genes that we assessed.
+geneSets$gene_symbol <- toupper(geneSets$gene_symbol)
+geneSets <- geneSets[geneSets$gene_symbol %in% names(sce),]
+m_list <- geneSets %>% split(x = .$gene_symbol, f = .$gs_name)
+stats <- assocRes$waldStat_lineage1_conditionnonexpanded
+names(stats) <- rownames(assocRes)
+eaRes <- fgsea(pathways = m_list, stats = stats, nperm = 5e4, minSize =1)
+ooEA <- order(eaRes$pval, decreasing = FALSE)
+kable(head(eaRes[ooEA, 1:3], n = 20))
+```
+
+## DE between conditions
+```{r}
+# outer bulge marker
+plotSmoothers(gam_sce, assays(gam_sce)$counts, gene = 'Sparc',alpha = 1, border = TRUE) + ggtitle("Sparc") + theme_bw(base_line_size = 0)+
+  ggsave('./ob_sparc.pdf',height = 5,width=7.5)
+plotSmoothers(gam_sce, assays(gam_sce)$counts, gene = 'Cxcl14',alpha = 1, border = TRUE) + ggtitle("Cxcl14") + theme_bw(base_line_size = 0)+
+  ggsave('./ob_Cxcl14.pdf',height = 5,width=7.5)
+plotSmoothers(gam_sce, assays(gam_sce)$counts, gene = 'Postn',alpha = 1, border = TRUE) + ggtitle("Postn")+ theme_bw(base_line_size = 0)+
+  ggsave('./ob_Postn.pdf',height = 5,width=7.5)
+plotSmoothers(gam_sce, assays(gam_sce)$counts, gene = 'Krtdap',alpha = 1, border = TRUE, nPoints = 100) + ggtitle("Krtdap")+ theme_bw(base_line_size = 0)+
+  ggsave('./ob_Krtdap.pdf',height = 5,width=7.5)
+plotSmoothers(gam_sce, assays(gam_sce)$counts, gene = 'Cd44',alpha = 1, border = TRUE, nPoints = 100) + ggtitle("Cd44")+ theme_bw(base_line_size = 0)+theme_bw(base_line_size = 0)+
+  ggsave('./ob_Cd44.pdf',height = 5,width=7.5)
+#outer bulge keratinocytes characterized by expression of Krt6a/Krt75 and Cd34/Postn
+
+
+#IFE/basal 
+plotSmoothers(gam_sce, assays(gam_sce)$counts, gene = 'Krt14',alpha = 1, border = TRUE, nPoints = 100) + ggtitle("Krt14") + theme_bw(base_line_size = 0)+
+  ggsave('./ife_krt14.pdf',height = 5,width=7.5)
+plotSmoothers(gam_sce, assays(gam_sce)$counts, gene = 'Ly6e',alpha = 1, border = TRUE, nPoints = 100) + ggtitle("Ly6e")+ theme_bw(base_line_size = 0)+
+  ggsave('./ife_Ly6e.pdf',height = 5,width=7.5)
+plotSmoothers(gam_sce, assays(gam_sce)$counts, gene = 'Ifitm3',alpha = 1, border = TRUE, nPoints = 100) + ggtitle("Ifitm3")+ theme_bw(base_line_size = 0)+
+  ggsave('./ife_Ifitm3.pdf',height = 5,width=7.5)
+plotSmoothers(gam_sce, assays(gam_sce)$counts, gene = 'Mt2',alpha = 1, border = TRUE, nPoints = 100) + ggtitle("Mt2")+ theme_bw(base_line_size = 0)+
+  ggsave('./ife_Mt2.pdf',height = 5,width=7.5)# predominantly IFE- derived basal cells with high expression levels of Krt14/Mt2, two stages of differentiated cells marked by Krt10/Ptgs1
+
+
+plotSmoothers(gam_sce, assays(gam_sce)$counts, gene = 'Pcdh7',alpha = 1, border = TRUE, nPoints = 100) + ggtitle("Pcdh7")
+plotSmoothers(gam_sce, assays(gam_sce)$counts, gene = 'Lcn2',alpha = 1, border = TRUE, nPoints = 100) + ggtitle("Lcn2") # innate immune response
+plotSmoothers(gam_sce, assays(gam_sce)$counts, gene = 'S100a8',alpha = 1, border = TRUE, nPoints = 100) + ggtitle("S100a8")
+plotSmoothers(gam_sce, assays(gam_sce)$counts, gene = 'S100a9',alpha = 1, border = TRUE, nPoints = 100) + ggtitle("S100a9")
+plotSmoothers(gam_sce, assays(gam_sce)$counts, gene = 'S100a8',alpha = 1, border = TRUE, nPoints = 100) + ggtitle("S100a8")
+plotSmoothers(gam_sce, assays(gam_sce)$counts, gene = 'Krtdap',alpha = 1, border = TRUE, nPoints = 100) + ggtitle("Krtdap")
+plotSmoothers(gam_sce, assays(gam_sce)$counts, gene = 'Itgb1',alpha = 1, border = TRUE, nPoints = 100) + ggtitle("Itgb1")
+plotSmoothers(gam_sce, assays(gam_sce)$counts, gene = 'Cdh1',alpha = 1, border = TRUE, nPoints = 100) + ggtitle("Cdh1")
+
+```
+
+```{r}
+condRes <- conditionTest(gam_sce, l2fc = log2(2))
+condRes$padj <- p.adjust(condRes$pvalue, "fdr")
+mean(condRes$padj <= 0.05, na.rm = TRUE)
+sum(condRes$padj <= 0.05, na.rm = TRUE)
+conditionGenes <- rownames(condRes)[condRes$padj <= 0.05]
+conditionGenes <- conditionGenes[!is.na(conditionGenes)]
+
+```
+
+## Visualize most and least significant gene
+
+```{r, eval=TRUE}
+# plot genes
+oo <- order(condRes$waldStat, decreasing = TRUE)
+# most significant gene
+plotSmoothers(gam_sce, assays(gam_sce)$counts,
+              gene = rownames(assays(gam_sce)$counts)[oo[1]],
+              alpha = 1, border = TRUE)
+
+```
+
+## Heatmaps of genes DE between conditions
+```{r, eval=TRUE}
+# based on mean smoother
+yhatSmooth <- predictSmooth(gam_sce, gene = conditionGenes, nPoints = 50, tidy = FALSE)
+yhatSmoothScaled <- t(scale(t(yhatSmooth)))
+heatSmooth_E <- pheatmap(yhatSmoothScaled[, 51:100],
+  cluster_cols = FALSE,
+  show_rownames = FALSE, show_colnames = FALSE, main = "expanded", legend = FALSE,
+  silent = TRUE
+)
+matchingHeatmap_NE <- pheatmap(yhatSmoothScaled[heatSmooth_E$tree_row$order, 1:50],
+  cluster_cols = FALSE, cluster_rows = FALSE,
+  show_rownames = FALSE, show_colnames = FALSE, main = "nonexpanded",
+  legend = FALSE, silent = TRUE
+)
+grid.arrange(heatSmooth_E[[4]], matchingHeatmap_NE[[4]], ncol = 2)
+
+```
+
+
+
+```{r}
+statsCond <- condRes$waldStat
+names(statsCond) <- rownames(condRes)
+eaRes <- fgsea(pathways = m_list, stats = statsCond, nperm = 5e4, minSize = 1)
+ooEA <- order(eaRes$pval, decreasing = FALSE)
+kable(head(eaRes[ooEA, 1:3], n = 20))
+```
+

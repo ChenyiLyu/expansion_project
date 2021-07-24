@@ -1,0 +1,482 @@
+---
+title: "clustering"
+output:
+  html_document:
+    df_print: paged
+---
+@source https://github.com/hbctraining/scRNA-seq_online/blob/master/lessons/07_SC_clustering_cells_SCT.md
+# Overview
+* Run PCA and identify optimal PCs on itegrated data for clustering
+* Identify optimal resolution parameter for clustering
+* Use known skin markers to annotate cell cluster
+* Identify feature markers for each condition
+* Recheck clustering results
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+# Load libraries
+suppressPackageStartupMessages({
+  library(Seurat); library(tidyverse);
+  library(RCurl); library(cowplot);
+  library(openxlsx); library(ggplot2);
+  library(dplyr); library(patchwork);
+  library(RColorBrewer); source('./helper.R');
+})
+```
+
+## load data  annotation file
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+annotations <- read.csv("data/annotation.csv")
+annotations$gene_name <- tolower(annotations$gene_name)
+annotations$gene_name <- capFirst(annotations$gene_name)
+
+seurat_integrated <- readRDS('./results/seurat_integrated_mito_cc_3000.rds')
+```
+
+## Run PCA and determine how many pcs to include in clustering
+## Recheck batch effects; samples across condition are clustered together
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+seurat_integrated <- RunPCA(object = seurat_integrated, npcs = 40)
+
+PCAPlot(seurat_integrated, group.by = 'batch', dims = c(1,2))+ theme_bp
+PCAPlot(seurat_integrated, group.by = 'batch', dims = c(2,3))+ theme_bp
+PCAPlot(seurat_integrated, group.by = 'sample')
+
+ElbowPlot(seurat_integrated)
+```
+
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+seurat_integrated <- RunUMAP(seurat_integrated, 
+                             dims = 1:20,
+                             reduction = "pca")
+```
+
+## Checkpoint: check on clustering quality
+### Evaluate the effect unwanted variations and if typical cluster markers are emerging as expected.
+If there is large variation due to batch/mitogenes/c, keep an eye on it. Check if the clustering results are representing true cell types. If there is clusters presented due to technical variations, consider to recluster.
+Here is some parameters I played with:
+* npcs to include in RUNUMAP(). Including more of the pcs may lead to noise, however, less PCs means less information are used for clustering. Determine a sweet spot.
+* Figure out the exact source of variation. You may go back to the qc figure, and think carefully which parameter you could optimize, e.g. mitoRatio, complexity, nUMI. Then go back to SCTransform, consider if you can pass in additional parameters to regress out.
+* nfeatures to include in integrate datasets, again the tradeoff is less nfeature less infomation; high nfeataure may introduce noise, which leads to overfit.
+* if none worked, and your data still looks like it is been cursed, consider on batch remove packages, e.g. comBat. 
+
+at this point, we found there is a ghosty cluster 1) showing no typical epithelial markers; 2) enriched for high mitochroal genes; 3) low nGene, meaning low sequencing depth; 4) however I tune the parameter, the cluster is just there persistently and stablely. distinguished like immune cell group.
+
+However, after trying out batch correction methods like comBat, I found out comBat didnt return expected results on batch removing.It takes long time to run, and return figure showing not as good integration as Seurata IntegrateData. So it seems will rise addtional issues that needs to conside, for example, batch correction will distort expression matrix? Then...balabalaa. After consulted with Sam and other fellows, I decide to remove it from downstreama analysis, which on the UMAP(res=0.45, nClusters = 16, weeklyreport20210126(slides 14)) on my machine is clustered as C8. I annotated it with high_mito and filtered it out from further analysis.
+
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+DefaultAssay(seurat_integrated) <- 'integrated'
+DimPlot(seurat_integrated, group.by = 'batch') 
+DimPlot(seurat_integrated, group.by = 'orig.ident') 
+DimPlot(seurat_integrated, group.by = 'Phase') 
+DimPlot(seurat_integrated, group.by = 'reGroup') & theme_fp & theme_fp_col
+
+# metrics
+metrics <-  c("nUMI", "nGene", "S.Score", "G2M.Score", "mitoRatio")
+p_metrics <- FeaturePlot(seurat_integrated, features = metrics, pt.size = 0.4, sort.cell = TRUE, label = TRUE) & theme_fp_col
+cowplot::plot_grid(p_metrics)
+# ggsave('figures/p_metrics.pdf',p_metrics, height = 8,width=8)
+
+# Select the RNA counts slot to be the default assay
+DefaultAssay(seurat_integrated) <- "RNA"
+# identify cluster conserved markers between two conditions
+conserved_markers <- map_dfr(levels(Idents(seurat_integrated)), get_conserved)
+conserved_markers_top10 <- conserved_markers %>% 
+  mutate(avg_fc = (nonexpanded_avg_log2FC + expanded_avg_log2FC) /2) %>% 
+  group_by(cluster_id) %>% 
+  top_n(n = 10, wt = avg_fc)
+write.xlsx(conserved_markers_top10,"./figures/conserved_markers_top10.xlsx", row.names = FALSE)
+write.xlsx(conserved_markers,"./figures/conserved_markers.xlsx", row.names = FALSE)
+
+# Normalize RNA data for visualization purposes
+seurat_integrated <- NormalizeData(seurat_integrated, verbose = FALSE)
+
+p <- FeaturePlot(seurat_integrated, 
+            features = c("Krt14", "Krt5","Mki67",
+                         "Krt1", "Krt10",'Lor',
+                         "Krt17",'Krt79','Cd200','Plet1',
+                         "Cd34",'Lgr5',"Krt15",
+                         "Mgst1",'Scd1',
+                         "Cd3d",'Thy1','Cd207','Cd3g','Cd3e'
+                         ),
+            label = FALSE, 
+            sort.cell = TRUE,
+            repel = TRUE
+) & theme_fp & theme_fp_col
+cowplot::plot_grid(p,legend)
+# ggsave('figures/p_all.pdf',p,height = 10,width = 10)
+
+#  gene of interest
+p <- FeaturePlot(seurat_integrated, 
+            features = c('Lgr6','tdTomato','Lgr5'),
+            split.by = 'sample',
+            label = FALSE, 
+            order = TRUE,
+            sort.cell = TRUE,
+            repel = TRUE
+)& theme_fp & theme_fp_col
+cowplot::plot_grid(p,legend)
+# Basal
+p <- FeaturePlot(seurat_integrated, 
+            features = c("Krt14", "Krt5", "Krt15"),
+            label = FALSE, 
+            order= TRUE,
+            min.cutoff = 'q10',
+            sort.cell = TRUE,
+            repel = TRUE
+) & theme_fp & theme_fp_col
+cowplot::plot_grid(p,legend)
+# ggsave('./figures/Basal.png')
+p <- FeaturePlot(seurat_integrated, 
+            features = c("Krt14", "Krt5", "Krt15", "Mki67",'Mt2','Fos','Ovol1','Col17a1','Id1','Cdkn1a'),
+            label = FALSE, 
+            order= TRUE,
+            min.cutoff = 'q10',
+            sort.cell = TRUE,
+            repel = TRUE
+)& theme_fp & theme_fp_col 
+cowplot::plot_grid(p,legend)
+# Spinous
+p <- FeaturePlot(seurat_integrated, 
+            features = c("Krt1", "Krt10",'Flg2', 'Ptgs1', 'Lor','Krt75'),
+            order= TRUE,
+            min.cutoff = 'q10',
+            label = FALSE, 
+            sort.cell = TRUE,
+            repel = TRUE
+)& theme_fp & theme_fp_col
+cowplot::plot_grid(p,legend)
+# HF
+p <- FeaturePlot(seurat_integrated, 
+            features = c("Krt17",'Krt79','Cd200','Plet1'),
+            label = FALSE, 
+            order= TRUE,
+            min.cutoff = 'q10',
+            sort.cell = TRUE,
+            repel = TRUE
+)& theme_fp & theme_fp_col 
+cowplot::plot_grid(p,legend)
+# HFSC
+p <- FeaturePlot(seurat_integrated, 
+            features = c("Cd34",'Lgr5','Postn','Krt6a'),
+            label = FALSE, 
+            order= TRUE,
+            min.cutoff = 'q10',
+            sort.cell = TRUE,
+            repel = TRUE
+)& theme_fp & theme_fp_col
+cowplot::plot_grid(p,legend)
+# SG
+p <- FeaturePlot(seurat_integrated, 
+            features = c("Mgst1",'Scd1','Tyr','Dct'),
+            label = FALSE, 
+            order= TRUE,
+            min.cutoff = 'q10',
+            sort.cell = TRUE,
+            repel = TRUE
+)& theme_fp & theme_fp_col
+cowplot::plot_grid(p,legend)
+#T cells cd3+,thy1+;langerhans celll cd207+, ctss+
+p <- FeaturePlot(seurat_integrated, 
+            features = c("Cd3d",'Thy1','Cd3g','Cd3e','Cd207','Ctss'),
+            label = FALSE, 
+            order= TRUE,
+            min.cutoff = 'q10',
+            sort.cell = TRUE,
+            repel = TRUE
+)& theme_fp & theme_fp_col
+cowplot::plot_grid(p,legend)
+
+```
+
+### prelinminary clustering to determine resolution
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+#-------clustering------
+# Determine the K-nearest neighbor graph
+seurat_integrated <- FindNeighbors(object = seurat_integrated, dims = 1:20)
+# Determine the clusters for various resolutions                                
+seurat_integrated <- FindClusters(object = seurat_integrated, resolution = c(0.2, 0.4, 0.45, 0.5, 0.6, 0.8,1.0))
+
+```
+
+```{r include=TRUE, message=FALSE, warning=FALSE}
+# Explore resolutions
+seurat_integrated@meta.data
+
+Idents(object = seurat_integrated) <- "integrated_snn_res.0.45"
+umap_res <- DimPlot(object = seurat_integrated,label = TRUE)
+umap_res
+seurat_integrated <- BuildClusterTree(
+  seurat_integrated)
+PlotClusterTree(seurat_integrated)
+
+```
+
+## Cell typing after determine a reasonable resolution
+### Just a collection of skin markers visulation
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+DefaultAssay(seurat_integrated) <- "RNA"
+seurat_integrated <- NormalizeData(seurat_integrated, verbose = FALSE)
+
+f1 <- FeaturePlot(seurat_integrated, 
+            features = c("Krt14"),
+            label = FALSE, 
+            sort.cell = TRUE,
+            repel = TRUE
+) &scale_colour_gradientn(breaks=c(0,6),labels=c('0','Max'), colours = rev(brewer.pal(n = 11, name = "RdYlGn"))) 
+legend <- get_legend(f1)
+
+p <- FeaturePlot(seurat_integrated, 
+            features = c("Krt14", "Krt5","Mki67",
+                         "Krt1", "Krt10",'Lor',
+                         "Krt17",'Krt79','Cd200','Plet1',
+                         "Cd34",'Lgr5', "Krt15",
+                         "Mgst1",'Scd1',
+                         "Cd3d",'Thy1','Cd207','Cd3g','Cd3e'
+                         ),
+            label = FALSE, 
+            sort.cell = TRUE,
+            repel = TRUE) & theme_fp & theme_fp_col
+cowplot::plot_grid(p,legend)
+ggsave('./makers.pdf', dpi = 72,width = 7,height = 5)
+
+# check fb exprs
+p <- FeaturePlot(seurat_integrated, 
+            features = c('Pdgfra'),
+            label = FALSE, 
+            order = TRUE,
+            sort.cell = TRUE,
+            repel = TRUE
+)& theme_fp & theme_fp_col
+cowplot::plot_grid(p, legend)
+
+#  gene of interest
+p <- FeaturePlot(seurat_integrated, 
+            features = c('Lgr6','tdTomato','Lgr5'),
+            split.by = 'sample',
+            label = FALSE, 
+            order = TRUE,
+            sort.cell = TRUE,
+            repel = TRUE
+)& theme_fp & theme_fp_col
+cowplot::plot_grid(p,legend)
+```
+In case the random UMAP shape and annotation might have minor difference, load in the processed data.
+Note that we have already processed the high_mito cluster out.
+
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+seurat_integrated <- readRDS('./results/seurat_annotated_remove_mito.rds')
+```
+
+## Assign idents
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+DefaultAssay(seurat_integrated) <- 'integrated'
+Idents(object = seurat_integrated) <- "integrated_snn_res.0.45"
+#idents by cluster name
+seurat_integrated$byMarkers<-Idents(
+  RenameIdents(
+    seurat_integrated, 
+    `3` = "Spinous I", 
+    `1` = "Spinous II", 
+    `7` = "Spinous III",
+    `9` = "Prolif_basal", 
+    `10` = "Prolif_basal", 
+    `11`='Prolif_basal',
+    `2` = 'Basal',
+    `4` = "HF I", 
+    `6` = "HF II", 
+    `12` = "HF III", 
+    `0` = "HF IV", 
+    `5` = "HF V",
+    `14` = "HFSC",
+    `15` = "SG",
+    `8` = "High_mito_cluster",
+    `13` = "Immune_cell"
+    ))
+```
+
+remove the annoying high mito clusters
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+Idents(object = seurat_integrated) <- "byMarkers"
+seurat_integrated <- SubsetData(seurat_integrated,ident.remove = 'High_mito_cluster')
+```
+
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+Idents(object = seurat_integrated) <- "byMarkers"
+table(Idents(seurat_integrated))
+umap_typed <- DimPlot(seurat_integrated,label = FALSE) 
+umap_typed
+
+# found out later HFII should be prolif_basal, because of similar gene expression pattern.
+
+seurat_integrated$reGroup<-Idents(RenameIdents(seurat_integrated, 
+                                                  "Basal"='Basal', 
+                                                  "Prolif_basal" ='Prolif_basal',
+                                                  "Spinous I"='Spinous I', 
+                                                  "Spinous II" ='Spinous II', 
+                                                  "Spinous III" ='Spinous III', 
+                                                  "HF II" ='Prolif_basal', 
+                                                  "HF I" ='Infundibulum', # express Infudi marker
+                                                  "HF III" ='HF III',
+                                                  "HF IV" ='HF IV',
+                                                  "HF V" ='HF V',
+                                                  "HFSC" ='HFSC',
+                                                  "Immune_cell"='Immune_cell', 
+                                                  'SG' = "SG"))
+seurat_integrated$reGroup <- factor(seurat_integrated$reGroup, levels = position)
+Idents(object = seurat_integrated) <- "reGroup"
+umap_typed <- DimPlot(seurat_integrated,label = FALSE,cols = theme_umap_col)+theme_bw(base_line_size = 0)
+umap_typed
+ggsave(file='./idents.pdf',width = 7,height = 5)
+seurat_integrated$mainGroup<-Idents(RenameIdents(seurat_integrated, 
+                                                  "Basal"='Basal', 
+                                                  "Prolif_basal" ='Basal',
+                                                  "Spinous I"='Spinous', 
+                                                  "Spinous II" ='Spinous', 
+                                                  "Spinous III" ='Spinous', 
+                                                  "Infundibulum" ='HF',
+                                                  "HF III" ='HF',
+                                                  "HF IV" ='HF',
+                                                  "HF V" ='HF',
+                                                  "HFSC" ='HF',
+                                                  "Immune_cell"='Immune_cell', 
+                                                  'SG' = "SG"))
+Idents(object = seurat_integrated) <- "mainGroup"
+arr <- c('Spinous', 'Basal', 'HF', 'Immune_cell', 'SG')
+seurat_integrated$mainGroup <- factor(seurat_integrated$mainGroup, levels = arr)
+umap_typed <- DimPlot(seurat_integrated,label = FALSE) 
+umap_typed
+```
+
+Save the annotated objects
+```{r}
+# saveRDS(seurat_integrated, "./results/seurat_annotated_remove_mito_x.rds")
+```
+
+## Characterize datasets
+## Sample Composition
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+position <- c('Spinous I','Spinous II','Spinous III','Prolif_basal','Basal','SG','Infundibulum','HF III', 'HF IV', 'HF V', 'HFSC','Immune_cell')
+
+Idents(object = seurat_integrated) <- "reGroup"
+
+# table sample composition by clusters and phase
+n_cells <- FetchData(seurat_integrated,
+                     vars = c("ident", "sample")) %>%
+  dplyr::count(ident, sample) %>%
+  tidyr::spread(ident, n) %>% 
+  gather(celltype,n,-sample)
+n_cells
+write.xlsx(n_cells,file = './n_cells.xlsx')
+p_cells <- ggplot(n_cells, aes(x=sample, y=n, fill=factor(celltype, levels=position))) + 
+  geom_bar(position = 'fill',stat = 'identity')+
+  scale_y_continuous(labels=scales::percent_format()) +
+  scale_x_discrete(limits=c('nonexpanded','expanded'),labels=c('nonexpanded (n=8,479)','expanded (n=6,570)'))+
+  labs(x='',y='')+
+  guides(fill=guide_legend(title='Celltype'))+
+  scale_fill_manual(values = theme_umap_col)+
+  theme_bp+ theme_classic()
+p_cells
+ ggsave('filtered_sum//p_cells.pdf',p_cells, height = 8,width=5)
+
+phase_cells <- FetchData(seurat_integrated, 
+                         vars = c("sample",'Phase')) %>%
+  dplyr::count(sample,Phase) %>%
+  tidyr::spread(sample, n) %>%
+  gather(sample,n,-Phase)
+phase_cells
+
+phase_cells <- ggplot(phase_cells, aes(x=sample, y=n, fill=Phase)) + 
+  geom_bar(position = 'fill', stat = "identity") +
+  scale_y_continuous(labels=scales::percent_format()) +
+  scale_x_discrete(limits=c('nonexpanded','expanded'),labels=c('nonexpanded (n=8,479)','expanded (n=6,570)'))+
+  labs(x='',y='')+
+  guides(fill=guide_legend(title='Celltype'))+
+  scale_fill_brewer(palette = 'Dark2')+
+  theme_bp+ theme_classic()
+phase_cells
+```
+
+### confirm conserved expressed genes between clusters
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+DefaultAssay(seurat_integrated) <- 'RNA'
+Idents(object = seurat_integrated) <- "byMarkers"
+
+levels(seurat_integrated) <- position
+seurat_integrated <- ScaleData(seurat_integrated)
+seurat_integrated <- NormalizeData(seurat_integrated)
+conserved_markers <- map_dfr(position, get_conserved)
+conserved_markers_top10 <- conserved_markers %>% 
+  mutate(avg_fc = (nonexpanded_avg_log2FC + expanded_avg_log2FC) /2) %>% 
+  group_by(cluster_id) %>% 
+  top_n(n = 10, wt = avg_fc)
+write.xlsx(conserved_markers_top10,"./filtered_sum/conserved_markers_top10_annotated.xlsx", row.names = FALSE)
+write.xlsx(conserved_markers,"./filtered_sum/conserved_markers_annotated.xlsx", row.names = FALSE)
+conserved_markers_top10
+```
+
+## Find differentially expressed features (cluster biomarkers) in integrated sample
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+DefaultAssay(seurat_integrated) <- 'RNA'
+Idents(seurat_integrated) <- "reGroup"
+levels(seurat_integrated) <- position
+seurat_integrated <- ScaleData(seurat_integrated)
+seurat_integrated <- NormalizeData(seurat_integrated)
+
+integrated.markers <- FindAllMarkers(seurat_integrated, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25,return.thresh = 0.01)
+integrated.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC)
+integrated.markers_top10 <- integrated.markers  %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC)
+
+hm_integrated.markers <- DoHeatmap(seurat_integrated, features = integrated.markers_top10$gene, group.colors = theme_umap_col, size = 4, angle = 45,label = FALSE,draw.lines = TRUE) +
+  theme(text = element_text(size = 14), 
+        axis.text.y = element_text(size = 5),
+        plot.title = element_text(color="black", size=14, face="bold"))+
+  scale_fill_gradientn(guide = 'colourbar', colours = rev(brewer.pal(n=11,name = "RdBu")))+
+  ggtitle('Integrated Cluster Markers')
+hm_integrated.markers
+ggsave(file = './filtered_sum/hm_integrated.markers.pdf', height = 10, width = 8)
+ggsave(file = './filtered_sum/hm_integrated.markers.png', height = 10, width = 8)
+
+write.xlsx(integrated.markers_top10,"./filtered_sum/integrated.markers_top10.xlsx", row.names = FALSE)
+write.xlsx(integrated.markers,"./filtered_sum/integrated.markers.xlsx", row.names = FALSE)
+conserved_markers_top10
+```
+
+## Identification of cluster feature marker for each condition
+```{r include=TRUE, results='hide',message=FALSE,warning=FALSE}
+Idents(seurat_integrated) <- "reGroup"
+seurat_objs <- SplitObject(seurat_integrated,split.by = 'sample')
+E_seurat <- seurat_objs[["expanded"]]
+E_seurat <- NormalizeData(E_seurat, verbose = FALSE)
+E_seurat <- ScaleData(E_seurat, verbose = FALSE)
+levels(E_seurat) <- position
+
+NE_seurat <- seurat_objs[["nonexpanded"]]
+NE_seurat <- NormalizeData(NE_seurat, verbose = FALSE)
+NE_seurat <- ScaleData(NE_seurat, verbose = FALSE)
+levels(NE_seurat) <- position
+
+stim.markers <- FindAllMarkers(E_seurat,only.pos = TRUE, min.pct = 0.25,logfc.threshold = 0.25,return.thresh = 0.01)
+top10_stim <- stim.markers %>% group_by(cluster) %>%  top_n(n = 10, wt = avg_log2FC)
+hm_e <- DoHeatmap(E_seurat, features = top10_stim$gene, size = 4, angle = 45, label = FALSE, group.colors = theme_umap_col, draw.lines = FALSE) +
+  theme(text = element_text(size = 14), 
+        axis.text.y = element_text(size = 5),
+        plot.title = element_text(color="black", size=14, face="bold"))+
+  scale_fill_gradientn(guide = 'colourbar', 
+                       colours = rev(brewer.pal(n=11,name = "RdBu")))
+hm_e
+top10_stim
+ggsave(hm_e, file='./filtered_sum/hm_E_clusterMKs.pdf',width = 7,height = 7,dpi=72)
+write.xlsx(stim.markers,file='./filtered_sum/E_clusterMKs.xlsx')
+
+stim.markers <- FindAllMarkers(NE_seurat,only.pos = TRUE, min.pct = 0.25,logfc.threshold = 0.25,return.thresh = 0.01)
+top10_stim <- stim.markers %>% group_by(cluster) %>%  top_n(n = 10, wt = avg_log2FC)
+hm_ne <- DoHeatmap(NE_seurat, features = top10_stim$gene, size = 4, angle = 45, label = FALSE,group.colors = theme_umap_col,draw.lines = FALSE) +
+  theme(text = element_text(size = 14), 
+        axis.text.y = element_text(size = 5),
+        plot.title = element_text(color="black", size=14, face="bold"))+
+  scale_fill_gradientn(guide = 'colourbar', 
+                       colours = rev(brewer.pal(n=11,name = "RdBu")))
+hm_ne
+top10_stim
+ggsave(hm_ne, file='./filtered_sum/hm_NE_clusterMKs.png',width = 7,height = 7,dpi=72)
+write.xlsx(stim.markers,file='./filtered_sum/NE_clusterMKs.xlsx')
+```

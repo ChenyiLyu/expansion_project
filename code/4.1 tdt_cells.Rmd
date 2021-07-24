@@ -1,0 +1,346 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+library(SingleCellExperiment)
+library(monocle)
+library(Seurat)
+library(tidyverse)
+library(Matrix)
+library(scales)
+library(cowplot)
+library(RCurl)
+library(RColorBrewer)
+library(openxlsx)
+library(reshape2)
+library(DDRTree)
+library(pheatmap)
+source('helper.R')
+seurat_integrated <- readRDS('./results/seurat_annotated_remove_mito.rds')
+
+```
+
+tdt cells
+```{r}
+DefaultAssay(seurat_integrated) <- 'RNA'
+tdt <- WhichCells(seurat_integrated, slot = 'counts', expression = `tdTomato` > 0 ) %>% subset(seurat_integrated,cells = .)
+n_cells <- FetchData(tdt, 
+                         vars = c('reGroup','ident')) %>%
+  dplyr::count(reGroup, ident) %>%
+  tidyr::spread(reGroup, n) %>%
+  gather('sample','n',-ident)
+n_cells
+```
+
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+DefaultAssay(seurat_integrated) <- 'RNA'
+lgr6_prog <- WhichCells(seurat_integrated, slot = 'counts', expression = `tdTomato` > 0 | `Lgr6` > 0) %>% SubsetData(seurat_integrated,cells = .)
+Idents(lgr6_prog) <- 'sample'
+levels(lgr6_prog) <- c('nonexpanded', 'expanded')
+PCAPlot(lgr6_prog,dims = c(1,2))
+saveRDS(lgr6_prog,'./lgr6_prog.rds')
+ge_count_mat <- as.data.frame(lgr6_prog@assays$RNA@counts['tdTomato',]) 
+names(ge_count_mat)[1] <- 'gene_num'
+ge_count_mat$sample <- NA
+ge_count_mat$sample[which(str_detect(rownames(ge_count_mat),'^e'))] <- 'expanded'
+ge_count_mat$sample[which(str_detect(rownames(ge_count_mat),'^ne'))] <- 'nonexpanded'
+ge_count_mat$sample <- factor(ge_count_mat$sample, levels = c('nonexpanded','expanded'))
+ggplot(ge_count_mat, aes(x = gene_num, fill = sample))+
+  geom_histogram(binwidth = 1, position = "identity",alpha=0.8)+
+  scale_fill_manual(values=c("#69b3a2", "#404080"))+theme_bw()+
+  scale_x_continuous() #+ ggsave('ge_count_tdt.pdf',width = 5,height = 3)
+  
+```
+
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+Idents(object = lgr6_prog) <- "byMarkers"
+levels(lgr6_prog) <- position
+DimPlot(lgr6_prog,cols = theme_umap_col)
+DimPlot(lgr6_prog,split.by = 'sample',cols = theme_umap_col)
+DimPlot(lgr6_prog,group.by = 'sample')+scale_fill_manual(values = c('#DDAA33','#33BBEE'))
+FeaturePlot(lgr6_prog,c('Lgr6','Lgr5'),split.by = 'sample')
+
+n_cells <- FetchData(lgr6_prog, 
+                         vars = c('orig.ident','ident')) %>%
+  dplyr::count(orig.ident, ident) %>%
+  tidyr::spread(orig.ident, n) %>%
+  gather('sample','n',-ident)
+p_cells <-  ggplot(n_cells, aes(x=sample, y=n, fill=ident))+
+  scale_x_discrete(limits=c('e2','e1'),labels=c('nonexpanded (n=2355)','expanded (n=641)'))+
+  geom_bar(position = 'fill', stat = "identity") +
+  scale_fill_brewer(palette = 'Paired')+
+  theme_bp
+
+phase_cells <- FetchData(lgr6_prog, 
+                         vars = c('orig.ident','Phase')) %>%
+  dplyr::count(orig.ident,Phase) %>%
+  tidyr::spread(orig.ident, n) %>%
+  gather('sample','n', -Phase)
+p_phase <- ggplot(phase_cells,aes(x=sample,y=n,fill=Phase))+ 
+    scale_x_discrete(limits=c('e2','e1'),labels=c('nonexpanded (n=2355)','expanded (n=641)'))+
+  geom_bar(positio='fill',stat = "identity") + scale_fill_brewer(palette = 'Dark2')+
+  theme_bp
+n_cells
+phase_cells
+p_cells
+p_phase
+```
+
+# data preprocess
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+levels(lgr6_prog) <- position
+DimPlot(lgr6_prog,cols = theme_umap_col)
+DimPlot(lgr6_prog,split.by = 'sample',cols = theme_umap_col)
+DimPlot(lgr6_prog,group.by = 'sample')+scale_color_manual(values = c('#DDAA33','#33BBEE'))
+FeaturePlot(lgr6_prog,c('Lgr6','Lgr5', 'tdTomato'),split.by = 'sample')
+
+n_cells <- FetchData(lgr6_prog, 
+                         vars = c('orig.ident','ident')) %>%
+  dplyr::count(orig.ident, ident) %>%
+  tidyr::spread(orig.ident, n) %>%
+  gather('sample','n',-ident)
+p_cells <-  ggplot(n_cells, aes(x=sample, y=n, fill=ident))+
+  scale_x_discrete(limits=c('e2','e1'),labels=c('nonexpanded','expanded'))+
+                     geom_bar(position = 'fill', stat = "identity") +
+                     scale_fill_brewer(palette = 'Paired')+theme_classic()
+
+phase_cells <- FetchData(lgr6_prog, 
+                         vars = c('orig.ident','Phase')) %>%
+  dplyr::count(orig.ident,Phase) %>%
+  tidyr::spread(orig.ident, n) %>%
+  gather('sample','n', -Phase)
+p_phase <- ggplot(phase_cells,aes(x=sample,y=n,fill=Phase))+ 
+    scale_x_discrete(limits=c('e2','e1'),labels=c('nonexpanded','expanded'))+
+geom_bar(positio='fill',stat = "identity") + scale_fill_brewer(palette = 'Dark2')+theme_classic()
+n_cells
+phase_cells
+p_cells
+p_phase
+```
+
+# Extract epi cells for each condition
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+DefaultAssay(lgr6_prog) <- 'RNA'
+levels(lgr6_prog) <- epiposition
+# split sample by condition
+tdt_objs <- SplitObject(lgr6_prog,split.by = 'sample')
+e_tdt <- tdt_objs[["expanded"]]
+ne_tdt <- tdt_objs[["nonexpanded"]]
+e_tdt
+ne_tdt
+```
+# import & select distribution for ur data
+Size factors help us normalize for differences in mRNA recovered across cells, and "dispersion" values will help us perform differential expression analysis later.
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+
+# e
+data <- as(as.matrix(e_tdt@assays$RNA@counts), 'sparseMatrix')
+pd <- new('AnnotatedDataFrame', data = e_tdt@meta.data)
+fData <- data.frame(gene_short_name = row.names(data), row.names = row.names(data))
+fd <- new('AnnotatedDataFrame', data = fData)
+e_cds <- newCellDataSet(data,
+                         phenoData = pd,
+                         featureData = fd,
+                         lowerDetectionLimit = 0.5,
+                         expressionFamily = negbinomial.size())
+e_cds <- estimateSizeFactors(e_cds)
+e_cds <- estimateDispersions(e_cds)
+e_cds <- detectGenes(e_cds, min_expr = 0.1)
+print(head(fData(e_cds)))
+expressed_genes <- row.names(subset(fData(e_cds), num_cells_expressed >= 10))
+
+# ne
+data <- as(as.matrix(ne_tdt@assays$RNA@counts), 'sparseMatrix')
+pd <- new('AnnotatedDataFrame', data = ne_tdt@meta.data)
+fData <- data.frame(gene_short_name = row.names(data), row.names = row.names(data))
+fd <- new('AnnotatedDataFrame', data = fData)
+ne_cds <- newCellDataSet(data,
+                         phenoData = pd,
+                         featureData = fd,
+                         lowerDetectionLimit = 0.5,
+                         expressionFamily = negbinomial.size())
+ne_cds <- estimateSizeFactors(ne_cds)
+ne_cds <- estimateDispersions(ne_cds)
+ne_cds <- detectGenes(ne_cds, min_expr = 0.1)
+
+
+
+```
+
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+options(scipen = 9999)
+
+pData(e_cds)$Total_mRNAs <- Matrix::colSums(exprs(e_cds))
+e_cds <- e_cds[,pData(e_cds)$Total_mRNAs < 1e6]
+upper_bound <- 10^(mean(log10(pData(e_cds)$Total_mRNAs)) +
+            2*sd(log10(pData(e_cds)$Total_mRNAs)))
+lower_bound <- 10^(mean(log10(pData(e_cds)$Total_mRNAs)) -
+            2*sd(log10(pData(e_cds)$Total_mRNAs)))
+qplot(Total_mRNAs, data = pData(e_cds), color = sample, geom =
+"density") +
+  geom_vline(xintercept = lower_bound) +
+  geom_vline(xintercept = upper_bound)
+# Log-transform each value in the expression matrix.
+L <- log(exprs(e_cds[expressed_genes,]))
+
+# Standardize each gene, so that they are all on the same scale,
+# Then melt the data with plyr so we can plot it easily
+melted_dens_df <- melt(Matrix::t(scale(Matrix::t(L))))
+# Plot the distribution of the standardized gene expression values.
+qplot(value, geom = "density", data = melted_dens_df) +
+stat_function(fun = dnorm, size = 0.5, color = 'red') +
+xlab("Standardized log(FPKM)") +
+ylab("Density")
+
+pData(ne_cds)$Total_mRNAs <- Matrix::colSums(exprs(ne_cds))
+ne_cds <- ne_cds[,pData(ne_cds)$Total_mRNAs < 1e6]
+upper_bound <- 10^(mean(log10(pData(ne_cds)$Total_mRNAs)) +
+            2*sd(log10(pData(ne_cds)$Total_mRNAs))) 
+lower_bound <- 10^(mean(log10(pData(ne_cds)$Total_mRNAs)) -
+            2*sd(log10(pData(ne_cds)$Total_mRNAs)))
+qplot(Total_mRNAs, data = pData(ne_cds), color = sample, geom =
+"density") +
+  geom_vline(xintercept = lower_bound) +
+  geom_vline(xintercept = upper_bound)
+# Log-transform each value in the expression matrix.
+L <- log(Biobase::exprs(ne_cds[expressed_genes,]))
+
+# Standardize each gene, so that they are all on the same scale,
+# Then melt the data with plyr so we can plot it easily
+melted_dens_df <- melt(Matrix::t(scale(Matrix::t(L))))
+# Plot the distribution of the standardized gene expression values.
+qplot(value, geom = "density", data = melted_dens_df) +
+stat_function(fun = dnorm, size = 0.5, color = 'red') +
+xlab("Standardized log(FPKM)") +
+ylab("Density")
+
+```
+
+# Ordering
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+set.seed(100)
+GM_state <- function(cds){
+  if (length(unique(pData(cds)$State)) > 1){
+    T0_counts <- table(pData(cds)$State, pData(cds)$byMarkers)[,"Basal III"]
+    return(as.numeric(names(T0_counts)[which
+          (T0_counts == max(T0_counts))]))
+  } else {
+    return (1)
+  }
+}
+
+# Choosing genes that define the progress
+e_tdt <- FindVariableFeatures(e_tdt,nfeatures = 1500)
+e_feature <- e_tdt@assays$RNA@var.features
+e_cds <-setOrderingFilter(e_cds, ordering_genes = e_feature)
+# Dimension reduction
+e_cds <-reduceDimension(e_cds, method = 'DDRTree')
+# ordering the cells in pseudotime
+e_cds <-orderCells(e_cds,reverse = TRUE)
+e_cds <- orderCells(e_cds, root_state = GM_state(e_cds))
+
+# ne
+ne_tdt <- FindVariableFeatures(ne_tdt,nfeatures = 1500)
+ne_feature <- ne_tdt@assays$RNA@var.features
+ne_cds <-setOrderingFilter(ne_cds, ordering_genes = ne_feature)
+ne_cds <-reduceDimension(ne_cds, method = 'DDRTree')
+ne_cds <-orderCells(ne_cds)
+ne_cds <- orderCells(ne_cds, root_state = GM_state(ne_cds))
+
+```
+
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+p_a <- plot_cell_trajectory(ne_cds, color_by = "byMarkers",cell_size = 1)+
+  scale_color_discrete('celltype') +
+  theme(legend.text=element_text(size=14))
+p_b <- plot_cell_trajectory(ne_cds, color_by = "Pseudotime",cell_size = 1)+
+  theme(legend.text=element_text(size=14))
+plot_grid(p_a,p_b,align = 'h')
+plot_cell_trajectory(ne_cds, color_by = "State") +
+    theme(legend.text=element_text(size=20))+
+    facet_wrap(~State, nrow = 1)
+
+p_a <- plot_cell_trajectory(e_cds, color_by = "byMarkers",cell_size = 1)+
+  scale_color_discrete('celltype') +
+  theme(legend.text=element_text(size=14))
+p_b <- plot_cell_trajectory(e_cds, color_by = "Pseudotime",cell_size = 1)+
+  theme(legend.text=element_text(size=14))
+plot_grid(p_a,p_b,align = 'h')
+plot_cell_trajectory(e_cds, color_by = "State") +
+    theme(legend.text=element_text(size=20))+
+    facet_wrap(~State, nrow = 1)
+```
+
+```{r}
+diff_test_res <- differentialGeneTest(e_cds[e_feature,],
+              fullModelFormulaStr = "~sm.ns(Pseudotime)")
+diff_test_res <- diff_test_res[order(diff_test_res$qval)[1:1000],]
+diff_test_res <- diff_test_res[,c("gene_short_name", "pval", "qval")]
+diff_test_res <- row.names(diff_test_res)
+diff_test_res
+t <- plot_pseudotime_heatmap(e_cds[diff_test_res,],
+                             cluster_rows = TRUE,
+                num_clusters = 4,
+                cores = 1,
+                show_rownames = F,return_heatmap = TRUE)
+t <- as.data.frame(cutree(t$tree_row, k=4))
+colnames(t) <- "Cluster"
+t$Gene <- rownames(t)
+write.xlsx(t, file='./monocle_e_1000gene.xlsx')
+```
+```{r}
+diff_test_res <- differentialGeneTest(ne_cds[ne_feature,],
+              fullModelFormulaStr = "~sm.ns(Pseudotime)")
+diff_test_res <- diff_test_res[order(diff_test_res$qval)[1:1000],]
+diff_test_res <- diff_test_res[,c("gene_short_name", "pval", "qval")]
+diff_test_res <- row.names(diff_test_res)
+t <- plot_pseudotime_heatmap(ne_cds[diff_test_res,],
+                             cluster_rows = TRUE,
+                num_clusters = 4,
+                cores = 1,
+                show_rownames = F,return_heatmap = TRUE)
+t <- as.data.frame(cutree(t$tree_row, k=4))
+colnames(t) <- "Cluster"
+t$Gene <- rownames(t)
+write.xlsx(t, file='./monocle_ne_1000gene.xlsx')
+```
+
+
+```{r}
+DefaultAssay(lgr6_prog) <- 'RNA'
+lgr6_prog <- ScaleData(lgr6_prog)
+lgr6_prog <- NormalizeData(lgr6_prog)
+```
+
+
+```{r}
+topn <- t$Gene[1:20]
+Idents(lgr6_prog) <- 'byMarkers'
+VlnPlot(lgr6_prog,features=topn,split.by = 'sample',pt.size = 0, stack = TRUE,flip = TRUE)+
+  # stat_compare_means(method = 'wilcox.test',vjust=2,label = "p.signif")+
+    scale_fill_manual(values = c('#DDAA33','#33BBEE'))+
+  scale_x_discrete(limits=c('Basal III','Basal II', 'Basal I', 'Spinous II','Spinous I'))+ggsave('tdt_gene.png',width=5,height=7)
+# x <- FetchData(lgr6_prog,vars = c('sample','topn','byMarkers'), slot = 'data')
+# x$cellid<- rownames(x)
+# y <- gather(x,key = 'gene', value = 'exprs',Krt16:Fabp5)
+# write.xlsx(y,file = './tdt.xlsx')
+# saveRDS(lgr6_prog,file='./results/lgr6epi.rds')
+```
+
+```{r}
+stim.markers <- FindAllMarkers(E_seurat,only.pos = TRUE, min.pct = 0.25,logfc.threshold = 0.25)
+top10_stim <- stim.markers %>% group_by(cluster) %>%  top_n(n = 10, wt = avg_logFC)
+hm_e <- DoHeatmap(E_seurat, features = top10_stim$gene, size = 4, angle = 45, label = FALSE, group.colors = theme_umap_col) +
+  theme(text = element_text(size = 14), 
+        axis.text.y = element_text(size = 5),
+        plot.title = element_text(color="black", size=14, face="bold"))+
+  scale_fill_gradientn(guide = 'colourbar', 
+                       colours = rev(brewer.pal(n=11,name = "RdBu")))
+hm_e
+top10_stim
+ggsave(hm_e, file='./summary/hm_E_clusterMKs.png',width = 10,height = 10)
+write.xlsx(stim.markers,file='./summary/E_clusterMKs.xlsx')
+
+```
+

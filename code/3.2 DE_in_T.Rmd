@@ -1,0 +1,116 @@
+---
+title: "de_nTvsT"
+output: html_document
+---
+### Load library
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+# Load libraries
+suppressPackageStartupMessages({
+  library(slingshot); library(SingleCellExperiment); library(tradeSeq);
+  library(Seurat); library(tidyverse);
+  library(RCurl); library(cowplot);
+  library(openxlsx); library(ggplot2);library(qusage);
+  library(dplyr); library(patchwork); library(ggpubr);
+  library(RColorBrewer); source('./helper.R'); 
+})
+
+# Load data
+seurat_integrated <- readRDS('./results/seurat_annotated_remove_mito.rds')
+Idents(object = seurat_integrated) <- "reGroup"
+seurat_integrated <- subset(seurat_integrated,idents = c('Spinous I', 'Spinous II', 'Spinous III', 'Basal', 'Infundibulum','HF III','HF IV','HF V','HFSC','Prolif_basal'))
+DefaultAssay(seurat_integrated) <- 'RNA'
+```
+
+```{r include=TRUE, results="hide", message=FALSE, warning=FALSE}
+tdt_cells <- WhichCells(object = seurat_integrated, slot = 'counts', expression = `tdTomato` > 0) 
+nontdt_cells <- WhichCells(object = seurat_integrated, slot = 'counts', expression = `tdTomato` == 0) 
+
+seurat_integrated <- SetIdent(seurat_integrated, cells = tdt_cells, value = 'tdT')
+seurat_integrated <- SetIdent(seurat_integrated, cells = nontdt_cells, value = 'nontdT')
+
+seurat_integrated$tdt <- Idents(seurat_integrated)
+DefaultAssay(seurat_integrated) <- 'RNA'
+seurat_hf <- NormalizeData(seurat_integrated)
+seurat_hf <- ScaleData(seurat_hf)
+Idents(object = seurat_hf) <- "tdt"
+levels(seurat_hf) <- c('nontdT','tdT')
+seurat_hf$sample <- factor(seurat_hf$sample, levels = c('nonexpanded','expanded'))
+```
+
+```{r}
+DimPlot(seurat_hf, split.by = 'tdt')
+# Selected genes
+DefaultAssay(seurat_hf) <- 'RNA'
+
+hippo <- c('Yap1', 'Wwtr1', 'Lats1')
+hippo1 <-  c('Sav1','Mob1a','Mob1b')
+yap_dn <- c('Amotl1', 'Myc')
+pi3k_akt <- c('Akt1','Itgb1','Hif1a')
+hh <- c('Banf1','Vcl')
+ptwy <- list(pi3k_akt,hippo,hippo1,yap_dn,hh)
+
+for (i in ptwy) {
+  goi <- i
+  print(VlnPlot(seurat_hf,features=goi,group.by = 'tdt',split.by = 'sample',pt.size = 0, flip = TRUE,stack = TRUE) +
+  stat_compare_means(method = 'wilcox.test',vjust=2,label = "p.signif")+
+  stat_summary(fun = mean, geom='point', position=position_dodge(width = 0.9), size = 6, colour = "black", shape = 95)+
+  scale_fill_manual(values = c('#DDAA33','#33BBEE')))+
+  ggsave('./hf_hippo.pdf',height = 5,width=5)
+}
+
+```
+
+```{r message=FALSE, warning=FALSE, results='hide'}
+# ptw from database, gmt.file
+start_time <- Sys.time()
+folder <- list.files('./gene_sets/')
+fn <- 'selected_sp'
+genesets <- list.files(paste0('./gene_sets/', fn))
+genesets
+for (geneset in genesets) {
+  genes <- qusage::read.gmt((paste0('./gene_sets/', fn, '/',  geneset)))
+  genes[[1]] <- genes[[1]] %>% tolower() %>% capFirst()
+  genes
+  geneset <- gsub('.gmt','',geneset)
+  geneset
+  seurat_hf <- AddModuleScore(
+    object = seurat_hf,
+    features = genes,
+    name = geneset, search =TRUE)
+} 
+setname <- c()
+
+# add score
+for (geneset in genesets) {
+  geneset <- gsub('.gmt','',geneset)
+  setname <- c(setname,paste0(geneset,'1'))
+}
+setname <- unlist(setname)
+
+# visualization
+print(VlnPlot(seurat_hf,features = setname,group.by = 'tdt',split.by = 'sample',flip=TRUE,stack =TRUE,pt.size = 0,combine = TRUE)+
+  scale_fill_manual(values = c('#DDAA33','#33BBEE'))+
+  geom_boxplot(width=0.1, color="black", outlier.shape = NA,alpha=0.2, position=position_dodge(width = 0.9))+
+  stat_compare_means(method = 'wilcox.test',label = "p.signif",vjust=2))+
+  ggsave('./filtered_sum/de_t/roi_score_sp.pdf',height = 10,width=10)
+end_time <- Sys.time()
+end_time-start_time
+
+print(VlnPlot(seurat_hf,features = 'quiesence1',group.by = 'tdt',split.by = 'sample',flip=TRUE,pt.size = 0,combine = TRUE)+
+  scale_fill_manual(values = c('#DDAA33','#33BBEE'))+
+  geom_boxplot(width=0.1, color="black", outlier.shape = NA,alpha=0.2, position=position_dodge(width = 0.9))+
+  stat_compare_means(method = 'wilcox.test',label = "p.signif",vjust=2))+
+  ggsave('./filtered_sum/de_t/quiesence1.pdf',height = 10,width=10)
+
+```
+```{r}
+p1 <- FeaturePlotScoring(obj=seurat_hf,feature = 'GO_HIPPO_SIGNALING1', metadata_column = "sample")
+p2 <- FeaturePlotScoring(obj=seurat_hf,feature = 'HALLMARK_HYPOXIA1', metadata_column = "sample")
+p3 <- FeaturePlotScoring(obj=seurat_hf,feature = 'quiesence1', metadata_column = "sample")
+p4 <- FeaturePlotScoring(obj=seurat_hf,feature = 'HALLMARK_GLYCOLYSIS1', metadata_column = "sample")
+wrap_plots(p1/p2/p3/p4)
+
+saveRDS(seurat_hf,'./filtered_sum/de_t/seurat_tdtCompare_prolif_score.rds')
+
+```
+
